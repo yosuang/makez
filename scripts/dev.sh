@@ -44,6 +44,7 @@ fi
 docker image inspect "$MAKEZ_RUNTIME_IMAGE" >/dev/null
 go build -o .local/makez ./cmd/makez
 
-printf '\nConsole: http://%s\nAPI Key: %s\n' "${MAKEZ_LISTEN:-127.0.0.1:8088}" "$(jq -er 'keys[0]' <<< "$MAKEZ_API_KEYS")"
+printf '\nGo API: http://%s\nAPI Key: %s\n' "${MAKEZ_LISTEN:-127.0.0.1:8088}" "$(jq -er 'keys[0]' <<< "$MAKEZ_API_KEYS")"
+printf 'Web: run make web-dev in another terminal, then open http://127.0.0.1:3000\n'
 printf 'Temporal: http://127.0.0.1:18233\nCtrl+C stops makez. Infrastructure stays running; use make infra-down to stop it.\n\n'
 exec .local/makez all

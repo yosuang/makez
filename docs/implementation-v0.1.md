@@ -4,21 +4,25 @@
 
 ## 启动与查看
 
-宿主依赖：Go 1.26+、Docker（Compose v2.20+）、jq、OpenSSL。Temporal 和 OpenSandbox 由 Compose 运行，无需在宿主安装 Temporal CLI 或 uv/uvx。镜像使用 PostgreSQL 17、Temporal CLI 1.9.1（Server 1.32.0）和 OpenSandbox Server 1.1.1。
+后端宿主依赖：Go 1.27.2+、Docker（Compose v2.20+）、jq、OpenSSL。Web 依赖受支持的 Node.js 和 pnpm，见 [Web 说明](../apps/web/README.md)。Temporal 和 OpenSandbox 由 Compose 运行，无需在宿主安装 Temporal CLI 或 uv/uvx。镜像使用 PostgreSQL 17、Temporal CLI 1.9.1（Server 1.32.0）和 OpenSandbox Server 1.1.1。
 
 ```sh
 make dev
+# 在另一个终端启动独立 Web
+make web-install # 首次运行
+make web-dev
 ```
 
 首次生成 `.local/env` 中的本机密钥，执行 `docker compose up -d --wait` 等待三个基础服务健康，再构建沙箱镜像和 Go 程序。`dev.sh` 最后通过 `exec` 运行本机 API/Worker，日志直接输出到终端。将启动时打印的 Key 填入控制台后，可以提交任务、查看日志、取消任务和下载成果。
 
-- 控制台/API：`http://127.0.0.1:8088`
+- Web 控制台：`http://127.0.0.1:3000`
+- Go API：`http://127.0.0.1:8088`（根路径不再提供页面）
 - Temporal UI：`http://127.0.0.1:18233`
 - Temporal gRPC：`127.0.0.1:17233`
 - OpenSandbox：`127.0.0.1:18080`
 - PostgreSQL：`127.0.0.1:55432`
 
-Ctrl+C 只停止 Go API/Worker，三个基础服务继续运行。首次完成 `make dev` 后，可独立管理基础服务：
+在 `make dev` 终端按 Ctrl+C 只停止 Go API/Worker，三个基础服务继续运行。Web 通过另一个终端独立启停。首次完成 `make dev` 后，可独立管理基础服务：
 
 ```sh
 make infra-up    # 启动并等待健康检查；可重复执行
@@ -29,7 +33,7 @@ make infra-down # 停止并移除服务容器，保留数据
 
 直接使用 Compose 时，先 `source .local/env`；首次启动还需 `docker volume create makez-postgres`（`make dev` / `make infra-up` 会自动完成）。例如 `docker compose logs -f opensandbox`，或 `docker compose exec temporal temporal workflow list`。`infra-down` 前先结束任务；脚本不会自动停止旧环境或占用端口的其他进程。
 
-若出现 `bind: address already in use`，说明 API 地址已被占用。用 `lsof -nP -iTCP:8088 -sTCP:LISTEN` 找到进程，在其原终端按 Ctrl+C 停止后再运行 `make dev`；也可设置 `MAKEZ_LISTEN=127.0.0.1:8089 make dev` 使用另一个端口。程序在启动 Worker 之前绑定 API 端口，绑定失败不会打印 `makez console ready`。
+若出现 `bind: address already in use`，说明 API 地址已被占用。用 `lsof -nP -iTCP:8088 -sTCP:LISTEN` 找到进程，在其原终端按 Ctrl+C 停止后再运行 `make dev`；也可设置 `MAKEZ_LISTEN=127.0.0.1:8089 make dev` 使用另一个端口，并将 `apps/web/.dev.vars` 的 `MAKEZ_API_ORIGIN` 设为 `http://127.0.0.1:8089`。程序在启动 Worker 之前绑定 API 端口，绑定失败不会打印 `makez API ready`。
 
 | 数据 | 存放位置 |
 |---|---|
@@ -69,7 +73,8 @@ make dev
 | 位置 | 已实现职责 |
 |---|---|
 | `internal/core/contracts.go` | SandboxProvider / AgentAdapter、能力与状态类型；不依赖 Temporal 或 OpenSandbox |
-| `internal/api` | 工作区 API Key、输入校验、任务/成果查询、SSE 重放、内嵌本机控制台 |
+| `apps/web` | 独立 TanStack Start 控制台、Cloudflare Worker 同源 API 转发；Vite+、shadcn/ui + Base UI |
+| `internal/api` | 工作区 API Key、输入校验、任务/成果查询、SSE 重放；不再内嵌页面 |
 | `internal/store` | PostgreSQL 事务、状态约束、幂等请求、Outbox、操作意图、日志游标和归档检查点 |
 | `internal/workflow` | Task / Cleanup / Recovery Workflow，Activity、Outbox 投递和异常对账 |
 | `internal/sandbox` | OpenSandbox 原生生命周期 API、归属检查、运行时控制；平台接口不绑定 E2B |
@@ -81,7 +86,9 @@ make dev
 
 ```mermaid
 flowchart LR
-  U[控制台 / HTTP 客户端] --> API[Go API]
+  U[浏览器] --> WEB[独立 Web / API 转发]
+  WEB --> API[Go API]
+  HTTP[HTTP 客户端] --> API
   API --> DB[(PostgreSQL: Task / Run / Outbox)]
   API -->|投递 Outbox| T[Temporal]
   T --> W[Go Worker / Activities]

@@ -31,6 +31,17 @@ type apiFixture struct {
 	token     string
 }
 
+func TestAPIHasNoEmbeddedWebConsole(t *testing.T) {
+	handler := (&Server{}).Handler()
+	for route, want := range map[string]int{"/": http.StatusNotFound, "/healthz": http.StatusOK, "/v1/tasks": http.StatusUnauthorized} {
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, route, nil))
+		if response.Code != want {
+			t.Fatalf("%s: status=%d want=%d", route, response.Code, want)
+		}
+	}
+}
+
 func apiTestServer(t *testing.T) *apiFixture {
 	t.Helper()
 	databaseURL := os.Getenv("MAKEZ_TEST_DATABASE_URL")

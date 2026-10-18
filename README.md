@@ -12,5 +12,17 @@
 ## Development
 
 ```bash
+# Terminal 1: Go API, execution worker, and local infrastructure
 make dev
+
+# Terminal 2: independent Web app
+make web-install # first run
+make web-dev
 ```
+
+Open **http://127.0.0.1:3000** and connect with the workspace API key printed by `make dev`.
+The Go API listens on `127.0.0.1:8088`; it no longer serves a Web page.
+
+The Web app uses TanStack Start, Vite+, and shadcn/ui (Base UI), with a Cloudflare Worker forwarding `/v1/*` to Go. Task state remains in PostgreSQL and artifacts remain in the backend's local archive.
+
+See [Web setup and deployment](apps/web/README.md) and [backend development](docs/implementation-v0.1.md).

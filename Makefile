@@ -1,9 +1,24 @@
 SHELL := /bin/bash
 
-.PHONY: dev infra-up infra-down infra-logs infra-ps test test-integration image image-codex build
+.PHONY: dev web-install web-dev web-build web-check web-test infra-up infra-down infra-logs infra-ps test test-integration image image-codex build
 
 dev:
 	./scripts/dev.sh
+
+web-install:
+	pnpm --dir apps/web install --frozen-lockfile
+
+web-dev:
+	pnpm --dir apps/web dev
+
+web-build:
+	pnpm --dir apps/web build
+
+web-check:
+	pnpm --dir apps/web check
+
+web-test:
+	pnpm --dir apps/web test
 
 infra-up:
 	@source .local/env && docker volume create makez-postgres >/dev/null && docker compose up -d --wait --wait-timeout 90
