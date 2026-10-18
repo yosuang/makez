@@ -1,0 +1,22 @@
+[server]
+host = "0.0.0.0"
+port = 8080
+max_sandbox_timeout_seconds = 7200
+
+[proxy]
+# The server and its sandboxes share this Compose-managed network.
+resolve_internal = true
+
+[runtime]
+type = "docker"
+execd_image = "opensandbox/execd:v1.1.0"
+
+[store]
+type = "sqlite"
+path = "/data/opensandbox.db"
+
+[docker]
+network_mode = "makez-sandboxes"
+publish_host = "127.0.0.1"
+no_new_privileges = true
+pids_limit = 256

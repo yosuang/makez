@@ -1,0 +1,8 @@
+.agents/
+skills-lock.json
+.seecode/
+diagrams/
+.local/
+/makez
+.env
+__pycache__/
