@@ -1,0 +1,34 @@
+version: "2"
+
+run:
+  timeout: 10m
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
+
+  exclusions:
+    generated: lax
+
+  settings:
+    gofmt:
+      simplify: true
+
+linters:
+  default: none
+
+  enable:
+    - depguard
+    - dupl
+    - gomodguard_v2
+    - govet
+    - ineffassign
+    - misspell
+    - nakedret
+    - revive
+    - staticcheck
+    - thelper
+    - unused
+    - usestdlibvars
+    - usetesting
