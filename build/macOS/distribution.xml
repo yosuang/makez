@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="utf-8" standalone="yes"?>
+<installer-gui-script minSpecVersion="2">
+    <title>makez</title>
+    <options hostArchitectures="arm64,x86_64" customize="never" require-scripts="true" allow-external-scripts="false"/>
+    <domains enable_localSystem="true"/>
+    <installation-check script="installCheck();"/>
+    <script>
+    function installCheck() {
+        // this check is redundant, but it produces a user friendly error message
+        // compared to a disabled install button caused by allowed-os-versions
+        if (!(system.compareVersions(system.version.ProductVersion, '12') &gt;= 0)) {
+            my.result.title = 'Unable to install';
+            my.result.message = 'makez requires macOS 12 or later.';
+            my.result.type = 'Fatal';
+            return false;
+        }
+        return true;
+    }
+    </script>
+    <allowed-os-versions>
+        <os-version min="12.0" />
+    </allowed-os-versions>
+
+    <choices-outline>
+        <line choice="makez"/>
+    </choices-outline>
+    <choice id="makez" title="makez (universal)">
+        <pkg-ref id="dev.makez.makez.pkg"/>
+    </choice>
+
+    <pkg-ref id="dev.makez.makez.pkg" auth="root">#dev.makez.makez.pkg</pkg-ref>
+</installer-gui-script>

@@ -5,8 +5,8 @@
 Build from the repository root:
 
 ```sh
-make image
-make image-codex
+docker build --target sandbox -t makez-runtime:0.1 .
+docker build --target codex -t makez-runtime-codex:0.1 .
 MAKEZ_SANDBOX_INTEGRATION=1 go test ./internal/sandbox -run TestOpenSandboxIntegration -v
 ```
 

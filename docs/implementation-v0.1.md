@@ -8,12 +8,14 @@
 
 ```sh
 make dev
-# 在另一个终端启动独立 Web
-make web-install # 首次运行
-make web-dev
+
+# 另一个终端
+cd apps/web
+pnpm install --frozen-lockfile # 首次运行
+pnpm dev
 ```
 
-首次生成 `.local/env` 中的本机密钥，执行 `docker compose up -d --wait` 等待三个基础服务健康，再构建沙箱镜像和 Go 程序。`dev.sh` 最后通过 `exec` 运行本机 API/Worker，日志直接输出到终端。将启动时打印的 Key 填入控制台后，可以提交任务、查看日志、取消任务和下载成果。
+首次生成 `.local/env` 中的本机密钥，执行 `docker compose up -d --wait` 等待三个基础服务健康，再构建沙箱镜像和 Go 程序。`build/dev.sh` 最后通过 `exec` 运行 `bin/makez`，日志直接输出到终端。将启动时打印的 Key 填入控制台后，可以提交任务、查看日志、取消任务和下载成果。
 
 - Web 控制台：`http://127.0.0.1:3000`
 - Go API：`http://127.0.0.1:8088`（根路径不再提供页面）
@@ -22,16 +24,18 @@ make web-dev
 - OpenSandbox：`127.0.0.1:18080`
 - PostgreSQL：`127.0.0.1:55432`
 
-在 `make dev` 终端按 Ctrl+C 只停止 Go API/Worker，三个基础服务继续运行。Web 通过另一个终端独立启停。首次完成 `make dev` 后，可独立管理基础服务：
+在 `make dev` 终端按 Ctrl+C 只停止 Go API/Worker，三个基础服务继续运行。Web 通过另一个终端独立启停。`make clean` 只删除 `bin/`、`dist/`、Web 构建目录和本机构建出的 `makez` 二进制，不停止 Compose，也不删除 `.local` 里的密钥、数据库和成果。
+
+首次完成 `make dev` 后，可独立管理基础服务。先 `source .local/env`；首次启动还需 `docker volume create makez-postgres`（`make dev` 会自动完成）：
 
 ```sh
-make infra-up    # 启动并等待健康检查；可重复执行
-make infra-ps    # 查看状态
-make infra-logs  # 查看服务日志
-make infra-down # 停止并移除服务容器，保留数据
+docker compose up -d --wait --wait-timeout 90 # 启动并等待健康检查；可重复执行
+docker compose ps
+docker compose logs -f
+docker compose down # 停止并移除服务容器，保留数据
 ```
 
-直接使用 Compose 时，先 `source .local/env`；首次启动还需 `docker volume create makez-postgres`（`make dev` / `make infra-up` 会自动完成）。例如 `docker compose logs -f opensandbox`，或 `docker compose exec temporal temporal workflow list`。`infra-down` 前先结束任务；脚本不会自动停止旧环境或占用端口的其他进程。
+例如 `docker compose logs -f opensandbox`，或 `docker compose exec temporal temporal workflow list`。`docker compose down` 前先结束任务；脚本不会自动停止旧环境或占用端口的其他进程。
 
 若出现 `bind: address already in use`，说明 API 地址已被占用。用 `lsof -nP -iTCP:8088 -sTCP:LISTEN` 找到进程，在其原终端按 Ctrl+C 停止后再运行 `make dev`；也可设置 `MAKEZ_LISTEN=127.0.0.1:8089 make dev` 使用另一个端口，并将 `apps/web/.dev.vars` 的 `MAKEZ_API_ORIGIN` 设为 `http://127.0.0.1:8089`。程序在启动 Worker 之前绑定 API 端口，绑定失败不会打印 `makez API ready`。
 
@@ -64,7 +68,7 @@ mv -n .local/opensandbox.db* .local/opensandbox/
 make dev
 ```
 
-若仅有一个旧数据库，只迁移对应的一组文件；不要覆盖目标目录中已有的数据库。`dev.sh` 检测到旧路径会停止并提示迁移，避免悄悄创建空的历史库。Compose 通过 `external: true` 复用原 `makez-postgres` volume；旧 PostgreSQL 容器保持停止，不要与新容器同时启动。`.local/env`、SecretRef 注册表和成果路径保持不变。
+若仅有一个旧数据库，只迁移对应的一组文件；不要覆盖目标目录中已有的数据库。`build/dev.sh` 检测到旧路径会停止并提示迁移，避免悄悄创建空的历史库。Compose 通过 `external: true` 复用原 `makez-postgres` volume；旧 PostgreSQL 容器保持停止，不要与新容器同时启动。`.local/env`、SecretRef 注册表和成果路径保持不变。
 
 `cmd/makez` 支持 `all`、`api`、`worker` 三种模式。同一代码库可以将 API 与 Worker 分别运行。API 使用延迟连接 Temporal，Temporal 不可用时仍能接收并持久化任务。
 
@@ -233,11 +237,12 @@ CLI 读取 `/workspace/input.txt`，在 `/workspace` 内输出文件，退出前
 ## 已验证与复现
 
 ```sh
-make test
-make test-integration
+go test -race ./...
+MAKEZ_TEST_DATABASE_URL='postgres://makez:makez-local@127.0.0.1:55432/makez?sslmode=disable' go test -race ./internal/store ./internal/api ./internal/workflow
+MAKEZ_SANDBOX_INTEGRATION=1 go test ./internal/sandbox -run TestOpenSandboxIntegration -v
 ```
 
-`make test-integration` 需要已启动本机 PostgreSQL/OpenSandbox。若使用随机密钥，先 `source .local/env`，再设置 `export OPEN_SANDBOX_API_KEY="$MAKEZ_SANDBOX_API_KEY"`。Linux 进程监督检查使用普通 Go 测试二进制，执行方式见 [沙箱协议文档](sandbox-runtime.md)。项目暂不增加新的测试框架或独立测试工程。
+后两条需要已启动本机 PostgreSQL/OpenSandbox。若使用随机密钥，先 `source .local/env`，再设置 `export OPEN_SANDBOX_API_KEY="$MAKEZ_SANDBOX_API_KEY"`。Linux 进程监督检查使用普通 Go 测试二进制，执行方式见 [沙箱协议文档](sandbox-runtime.md)。项目暂不增加新的测试框架或独立测试工程。
 
 以下是真实任务的历史验收记录。一次性 Python 验收与登录配置脚本已经移除，不再作为项目入口。
 
@@ -270,10 +275,17 @@ make test-integration
 
 ## Go 工程化整理
 
-根目录 `Dockerfile` 用 `sandbox` / `codex` 两个目标构建镜像，对应 `make image` / `make image-codex`。监督与启动代码均为 Go，分别归入自己的 `cmd` 入口和 `internal` 包；原 `runtime/` 目录已移除，`scripts/` 仅保留 `dev.sh`，其内部也不再调用 Python。沙箱镜像中的 Python 用于 Demo 和 Agent 工作负载。
+根目录 `Dockerfile` 用 `sandbox` / `codex` 两个目标构建镜像：
+
+```sh
+docker build --target sandbox -t makez-runtime:0.1 .
+docker build --target codex -t makez-runtime-codex:0.1 .
+```
+
+监督与启动代码均为 Go，分别归入自己的 `cmd` 入口和 `internal` 包；原 `runtime/` 与 `scripts/` 目录已移除。本机启动脚本是 `build/dev.sh`，二进制由 `go run ./build` 输出到 `bin/makez`，脚本内部不再调用 Python。沙箱镜像中的 Python 用于 Demo 和 Agent 工作负载。macOS 与 Windows 安装包配置在 `build/macOS` 和 `build/windows`。
 
 首次切换前结束旧任务，重建镜像并重启 API/Worker：旧的冻结 Plan 可能包含 Python 可执行路径，不能用新镜像接续。数据库、已有成果和 SecretRef 注册表不需要迁移。
 
 本次迁移已通过 Go race 测试、真实 PostgreSQL 测试、`go vet`、Linux 容器内监督测试、两种镜像构建及真实 OpenSandbox 联调。Go 启动器完成了真实 Codex 任务 `a2a018632db647b428409c9baebf69cc`：Task / Run 均为 `SUCCEEDED`，`verified_stopped=true`、`cleanup_state=DONE`；通过 API 下载的验证文件逐字节正确，SHA-256 与归档清单一致。
 
-随后切换 Docker Compose：三个服务健康检查通过；迁移前的 19 条 Task、成果 ID 及 Temporal 历史可读取。新 Demo Task `fac1cc1599f69827fbd81c69b5fac951` 完成执行、成果校验与沙箱清理，真实 OpenSandbox 凭据过滤集成测试通过。Ctrl+C 只停止 Go；执行 `infra-down` / `infra-up` 后，Task 列表与已完成 Workflow 历史保持一致。本次基础服务调整未重新调用真实 Codex 模型。
+随后切换 Docker Compose：三个服务健康检查通过；迁移前的 19 条 Task、成果 ID 及 Temporal 历史可读取。新 Demo Task `fac1cc1599f69827fbd81c69b5fac951` 完成执行、成果校验与沙箱清理，真实 OpenSandbox 凭据过滤集成测试通过。Ctrl+C 只停止 Go；执行 `docker compose down` / `docker compose up -d --wait` 后，Task 列表与已完成 Workflow 历史保持一致。本次基础服务调整未重新调用真实 Codex 模型。
