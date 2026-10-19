@@ -42,9 +42,9 @@ if [[ "$MAKEZ_RUNTIME_IMAGE" == makez-runtime-codex:0.1 ]]; then
   docker build --target codex -t makez-runtime-codex:0.1 .
 fi
 docker image inspect "$MAKEZ_RUNTIME_IMAGE" >/dev/null
-go build -o .local/makez ./cmd/makez
+go run ./build bin/makez
 
 printf '\nGo API: http://%s\nAPI Key: %s\n' "${MAKEZ_LISTEN:-127.0.0.1:8088}" "$(jq -er 'keys[0]' <<< "$MAKEZ_API_KEYS")"
-printf 'Web: run make web-dev in another terminal, then open http://127.0.0.1:3000\n'
-printf 'Temporal: http://127.0.0.1:18233\nCtrl+C stops makez. Infrastructure stays running; use make infra-down to stop it.\n\n'
-exec .local/makez all
+printf 'Web: in another terminal, from apps/web, run pnpm install --frozen-lockfile on first run, then pnpm dev, and open http://127.0.0.1:3000\n'
+printf 'Temporal: http://127.0.0.1:18233\nCtrl+C stops makez. Infrastructure stays running; use docker compose down to stop it.\n\n'
+exec bin/makez all

@@ -3,6 +3,8 @@ skills-lock.json
 .seecode/
 diagrams/
 .local/
+/bin/
+/dist/
 /makez
 .env
 __pycache__/

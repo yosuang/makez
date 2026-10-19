@@ -16,12 +16,14 @@
 make dev
 
 # Terminal 2: independent Web app
-make web-install # first run
-make web-dev
+pnpm --dir apps/web install --frozen-lockfile # first run
+pnpm --dir apps/web dev
 ```
 
 Open **http://127.0.0.1:3000** and connect with the workspace API key printed by `make dev`.
 The Go API listens on `127.0.0.1:8088`; it no longer serves a Web page.
+
+`make clean` removes `bin/`, `dist/`, the Web build, and a legacy `makez` binary. It does not stop Compose or delete `.local` data.
 
 The Web app uses TanStack Start, Vite+, and shadcn/ui (Base UI), with a Cloudflare Worker forwarding `/v1/*` to Go. Task state remains in PostgreSQL and artifacts remain in the backend's local archive.
 
