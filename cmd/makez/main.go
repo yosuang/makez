@@ -118,7 +118,7 @@ func run() error {
 	srv := &http.Server{Addr: listener.Addr().String(), Handler: handler, ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 15 * time.Second, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 32 << 10}
 	done := make(chan error, 1)
 	go func() {
-		slog.Info("makez console ready", "address", srv.Addr, "mode", mode)
+		slog.Info("makez API ready", "address", srv.Addr, "mode", mode)
 		done <- srv.Serve(listener)
 	}()
 	select {

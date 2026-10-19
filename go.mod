@@ -5,7 +5,7 @@ go 1.27.2
 require (
 	github.com/jackc/pgx/v5 v5.11.0
 	github.com/stretchr/testify v1.12.1
-	go.temporal.io/api v1.63.5
+	go.temporal.io/api v1.63.7
 	go.temporal.io/sdk v1.50.0
 )
 

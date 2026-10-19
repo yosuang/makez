@@ -1,6 +1,13 @@
 version: 2
 
 updates:
+  - package-ecosystem: "npm"
+    directory: "/apps/web"
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+
   - package-ecosystem: "gomod"
     directory: "/"
     schedule:
