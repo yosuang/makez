@@ -13,7 +13,7 @@ docker compose version >/dev/null
 compose=(docker compose -f dev/docker-compose.yaml)
 
 if [[ -e .local/temporal.db || -e .local/opensandbox.db ]]; then
-  echo "Move legacy SQLite data before starting Compose; see docs/implementation-v0.1.md (旧开发环境迁移)." >&2
+  echo "Legacy SQLite data is still at .local/temporal.db or .local/opensandbox.db. Stop old processes, then move .local/temporal.db* into .local/temporal/ and .local/opensandbox.db* into .local/opensandbox/, including WAL/SHM files, without overwriting files already there." >&2
   exit 1
 fi
 
