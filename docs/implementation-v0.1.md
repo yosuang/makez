@@ -43,7 +43,7 @@ docker compose down # 停止并移除服务容器，保留数据
 
 Compose 只挂载各服务自己的数据目录；认证快照和成果目录不挂载给基础服务。PostgreSQL 使用声明为 `external` 的 `makez-postgres` volume，启动入口幂等创建或复用它，Compose 只挂载、不管理它的删除；不要手动删除需要保留的数据卷。
 
-`compose.yaml` 定义端口、数据挂载和健康检查，`configs/opensandbox.toml` 定义 OpenSandbox 行为，API Key 通过服务环境注入。OpenSandbox 挂载本机 Docker socket，与创建的沙箱共用 `makez-sandboxes` 网络，服务端代理使用内部地址；对宿主发布的端口均绑定 `127.0.0.1`。这个配置用于可信本机开发。当前沙箱能力仍不包含网络白名单；将来启用 OpenSandbox 的 egress/networkPolicy 时需要重新设计其网络拓扑。
+`compose.yaml` 定义端口、数据挂载和健康检查，`build/opensandbox.toml` 定义 OpenSandbox 行为，API Key 通过服务环境注入。OpenSandbox 挂载本机 Docker socket，与创建的沙箱共用 `makez-sandboxes` 网络，服务端代理使用内部地址；对宿主发布的端口均绑定 `127.0.0.1`。这个配置用于可信本机开发。当前沙箱能力仍不包含网络白名单；将来启用 OpenSandbox 的 egress/networkPolicy 时需要重新设计其网络拓扑。
 
 Temporal 继续使用持久化开发服务器及内置 UI，按 [Temporal 官方本地开发方式](https://docs.temporal.io/cli/setup-cli)运行于容器。它与业务 PostgreSQL 独立，不需要引入生产集群初始化流程。
 
@@ -277,7 +277,7 @@ docker build --target sandbox -t makez-runtime:0.1 .
 docker build --target codex -t makez-runtime-codex:0.1 .
 ```
 
-监督与启动代码均为 Go，分别归入自己的 `cmd` 入口和 `internal` 包；原 `runtime/` 与 `scripts/` 目录已移除。本机启动脚本是 `build/dev.sh`，二进制由 `go run ./build` 输出到 `bin/makez`，脚本内部不再调用 Python。沙箱镜像中的 Python 用于 Demo 和 Agent 工作负载。macOS 与 Windows 安装包配置在 `build/macOS` 和 `build/windows`。
+监督与启动代码均为 Go，分别归入自己的 `cmd` 入口和 `internal` 包；原 `runtime/` 与 `scripts/` 目录已移除。本机启动脚本是 `build/dev.sh`，二进制由 `go run ./build` 输出到 `bin/makez`，脚本内部不再调用 Python。沙箱镜像中的 Python 用于 Demo 和 Agent 工作负载。本机 OpenSandbox 配置是 `build/opensandbox.toml`。macOS 与 Windows 安装包配置在 `build/macOS` 和 `build/windows`。
 
 首次切换前结束旧任务，重建镜像并重启 API/Worker：旧的冻结 Plan 可能包含 Python 可执行路径，不能用新镜像接续。数据库、已有成果和 SecretRef 注册表不需要迁移。
 

@@ -58,7 +58,7 @@ services:
 
 configs:
   opensandbox:
-    file: ./configs/opensandbox.toml
+    file: ./build/opensandbox.toml
 
 volumes:
   postgres:
