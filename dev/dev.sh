@@ -10,6 +10,7 @@ for dependency in go docker jq openssl pnpm; do
 done
 pnpm --dir apps/web install --frozen-lockfile
 docker compose version >/dev/null
+compose=(docker compose -f dev/docker-compose.yaml)
 
 if [[ -e .local/temporal.db || -e .local/opensandbox.db ]]; then
   echo "Move legacy SQLite data before starting Compose; see docs/implementation-v0.1.md (旧开发环境迁移)." >&2
@@ -37,7 +38,7 @@ else
 fi
 
 docker volume create makez-postgres >/dev/null
-docker compose up -d --wait --wait-timeout 90
+"${compose[@]}" up -d --wait --wait-timeout 90
 docker build --target sandbox -t makez-runtime:0.1 .
 if [[ "$MAKEZ_RUNTIME_IMAGE" == makez-runtime-codex:0.1 ]]; then
   docker build --target codex -t makez-runtime-codex:0.1 .
@@ -47,7 +48,7 @@ go run ./build bin/makez
 
 printf '\nGo API: http://%s\nAPI Key: %s\n' "${MAKEZ_LISTEN:-127.0.0.1:8088}" "$(jq -er 'keys[0]' <<< "$MAKEZ_API_KEYS")"
 printf 'Web: http://127.0.0.1:3000\n'
-printf 'Temporal: http://127.0.0.1:18233\nCtrl+C stops makez and Web. Infrastructure stays running; use docker compose down to stop it.\n\n'
+printf 'Temporal: http://127.0.0.1:18233\nCtrl+C stops makez and Web. Infrastructure stays running; use docker compose -f dev/docker-compose.yaml down to stop it.\n\n'
 
 # Separate process groups let cleanup also stop pnpm's child processes.
 set -m

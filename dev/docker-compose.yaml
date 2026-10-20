@@ -26,7 +26,7 @@ services:
       - "127.0.0.1:17233:7233"
       - "127.0.0.1:18233:8233"
     volumes:
-      - ./.local/temporal:/data
+      - ../.local/temporal:/data
     healthcheck:
       test: ["CMD", "temporal", "operator", "cluster", "health", "--address", "127.0.0.1:7233"]
       interval: 2s
@@ -45,7 +45,7 @@ services:
         target: /etc/opensandbox/config.toml
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
-      - ./.local/opensandbox:/data
+      - ../.local/opensandbox:/data
     networks:
       - sandboxes
     healthcheck:
@@ -58,7 +58,7 @@ services:
 
 configs:
   opensandbox:
-    file: ./build/opensandbox.toml
+    file: ./opensandbox.toml
 
 volumes:
   postgres:
