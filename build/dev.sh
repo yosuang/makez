@@ -2,12 +2,13 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-for dependency in go docker jq openssl; do
+for dependency in go docker jq openssl pnpm; do
   command -v "$dependency" >/dev/null || {
     echo "Missing dependency: $dependency" >&2
     exit 1
   }
 done
+pnpm --dir apps/web install --frozen-lockfile
 docker compose version >/dev/null
 
 if [[ -e .local/temporal.db || -e .local/opensandbox.db ]]; then
@@ -45,6 +46,34 @@ docker image inspect "$MAKEZ_RUNTIME_IMAGE" >/dev/null
 go run ./build bin/makez
 
 printf '\nGo API: http://%s\nAPI Key: %s\n' "${MAKEZ_LISTEN:-127.0.0.1:8088}" "$(jq -er 'keys[0]' <<< "$MAKEZ_API_KEYS")"
-printf 'Web: in another terminal, from apps/web, run pnpm install --frozen-lockfile on first run, then pnpm dev, and open http://127.0.0.1:3000\n'
-printf 'Temporal: http://127.0.0.1:18233\nCtrl+C stops makez. Infrastructure stays running; use docker compose down to stop it.\n\n'
-exec bin/makez all
+printf 'Web: http://127.0.0.1:3000\n'
+printf 'Temporal: http://127.0.0.1:18233\nCtrl+C stops makez and Web. Infrastructure stays running; use docker compose down to stop it.\n\n'
+
+# Separate process groups let cleanup also stop pnpm's child processes.
+set -m
+pids=()
+cleanup() {
+  trap '' INT TERM
+  for pid in "${pids[@]}"; do
+    kill -TERM -- "-$pid" 2>/dev/null || true
+  done
+  wait || true
+}
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+bin/makez all </dev/null &
+pids+=("$!")
+pnpm --dir apps/web dev </dev/null &
+pids+=("$!")
+
+# macOS ships Bash 3.2, which has no wait -n.
+while true; do
+  for pid in "${pids[@]}"; do
+    if ! kill -0 "$pid" 2>/dev/null; then
+      wait "$pid"
+      exit 0
+    fi
+  done
+  sleep 0.5
+done

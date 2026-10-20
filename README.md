@@ -12,13 +12,11 @@
 ## Development
 
 ```bash
-# Terminal 1: Go API, execution worker, and local infrastructure
+# Go API, execution worker, Web, and local infrastructure
 make dev
-
-# Terminal 2: independent Web app
-pnpm --dir apps/web install --frozen-lockfile # first run
-pnpm --dir apps/web dev
 ```
+
+Web dependencies are installed from the lockfile automatically. Ctrl+C stops Go and Web; Docker infrastructure stays running.
 
 Open **http://127.0.0.1:3000** and connect with the workspace API key printed by `make dev`.
 The Go API listens on `127.0.0.1:8088`; it no longer serves a Web page.

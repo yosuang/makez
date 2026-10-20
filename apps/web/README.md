@@ -6,12 +6,16 @@ Independent TanStack Start app on Cloudflare Workers. Vite+ handles development,
 
 Use Node.js 22.18+, 24.11+, or 26+ and the pinned pnpm version in `package.json`.
 
+From the repository root, run `make dev` to install Web dependencies and start the backend and Web together. Ctrl+C stops both.
+
+To run only Web separately:
+
 ```sh
 pnpm install --frozen-lockfile
 pnpm dev
 ```
 
-Open `http://127.0.0.1:3000`. Start the Go backend separately with `make dev` at the repository root. Enter the workspace API key printed by that command. The key lives only in browser memory; reconnect after a page reload. Disconnect clears the current workspace's task view and stops its polling and event stream.
+Open `http://127.0.0.1:3000`. Enter the workspace API key printed by `make dev`. The key lives only in browser memory; reconnect after a page reload. Disconnect clears the current workspace's task view and stops its polling and event stream.
 
 The default Go API origin is `http://127.0.0.1:8088`. For another local port, copy `.dev.vars.example` to `.dev.vars` and change `MAKEZ_API_ORIGIN`, then restart the Web development server. For example, pair `MAKEZ_LISTEN=127.0.0.1:8089 make dev` with `MAKEZ_API_ORIGIN=http://127.0.0.1:8089`.
 

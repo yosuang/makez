@@ -8,14 +8,9 @@
 
 ```sh
 make dev
-
-# 另一个终端
-cd apps/web
-pnpm install --frozen-lockfile # 首次运行
-pnpm dev
 ```
 
-首次生成 `.local/env` 中的本机密钥，执行 `docker compose up -d --wait` 等待三个基础服务健康，再构建沙箱镜像和 Go 程序。`build/dev.sh` 最后通过 `exec` 运行 `bin/makez`，日志直接输出到终端。将启动时打印的 Key 填入控制台后，可以提交任务、查看日志、取消任务和下载成果。
+自动按锁文件安装 Web 依赖，首次生成 `.local/env` 中的本机密钥，执行 `docker compose up -d --wait` 等待三个基础服务健康，再构建沙箱镜像和 Go 程序。`build/dev.sh` 最后同时运行 `bin/makez all` 和 Web 开发服务器，日志直接输出到终端；任一进程退出会停止另一进程。将启动时打印的 Key 填入控制台后，可以提交任务、查看日志、取消任务和下载成果。
 
 - Web 控制台：`http://127.0.0.1:3000`
 - Go API：`http://127.0.0.1:8088`（根路径不再提供页面）
@@ -24,7 +19,7 @@ pnpm dev
 - OpenSandbox：`127.0.0.1:18080`
 - PostgreSQL：`127.0.0.1:55432`
 
-在 `make dev` 终端按 Ctrl+C 只停止 Go API/Worker，三个基础服务继续运行。Web 通过另一个终端独立启停。`make clean` 只删除 `bin/`、`dist/`、Web 构建目录和本机构建出的 `makez` 二进制，不停止 Compose，也不删除 `.local` 里的密钥、数据库和成果。
+在 `make dev` 终端按 Ctrl+C 同时停止 Go API/Worker 和 Web（包括子进程），三个基础服务继续运行。`make clean` 只删除 `bin/`、`dist/`、Web 构建目录和本机构建出的 `makez` 二进制，不停止 Compose，也不删除 `.local` 里的密钥、数据库和成果。
 
 首次完成 `make dev` 后，可独立管理基础服务。先 `source .local/env`；首次启动还需 `docker volume create makez-postgres`（`make dev` 会自动完成）：
 
