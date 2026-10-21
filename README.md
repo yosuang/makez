@@ -1,4 +1,5 @@
 <div align="center">
+  <a href="https://makez.dev"><img src="build/icon/makez.svg" width="120" alt="makez" /></a>
   <h1>makez</h1>
   <p><b>Make building easy.</b> An AI-powered development platform for turning ideas into products.</p>
 </div>
