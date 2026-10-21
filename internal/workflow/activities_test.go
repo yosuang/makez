@@ -312,6 +312,6 @@ func TestReconcileResubmitsCleanupForTerminalPendingTask(t *testing.T) {
 	remote.On("ExecuteWorkflow", mock.Anything, mock.MatchedBy(func(options client.StartWorkflowOptions) bool {
 		return options.ID == CleanupID(task.WorkspaceID, task.ID) && options.WorkflowIDReusePolicy == enums.WORKFLOW_ID_REUSE_POLICY_ALLOW_DUPLICATE_FAILED_ONLY
 	}), mock.Anything, Input{task.WorkspaceID, task.ID}).Return(nil, nil).Once()
-	reconcile(context.Background(), db, remote)
+	reconcile(context.Background(), db, remote, store.RecoveryCursor{})
 	remote.AssertExpectations(t)
 }

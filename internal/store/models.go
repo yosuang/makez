@@ -45,6 +45,7 @@ type Task struct {
 }
 
 type Run struct {
+	StartedAt       *time.Time        `json:"-"`
 	ID              string            `json:"id"`
 	TaskID          string            `json:"task_id"`
 	State           core.RunState     `json:"state"`

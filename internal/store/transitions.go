@@ -197,7 +197,15 @@ func (s *Store) Publish(ctx context.Context, workspace, id string, state core.Ta
 	if err != nil {
 		return err
 	}
-	return tx.Commit(ctx)
+	if err = tx.Commit(ctx); err != nil {
+		return err
+	}
+	started := time.Time{}
+	if t.Run != nil && t.Run.StartedAt != nil {
+		started = *t.Run.StartedAt
+	}
+	s.Metrics.Result(ctx, string(state), started)
+	return nil
 }
 func (s *Store) SetCleanup(ctx context.Context, id string, state core.CleanupState) error {
 	if state != core.CleanupDone && state != core.CleanupPending && state != core.CleanupBlocked && state != core.CleanupNotRequired {

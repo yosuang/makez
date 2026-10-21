@@ -1,0 +1,504 @@
+basePath: /v1
+definitions:
+  api.ArtifactResponse:
+    properties:
+      id:
+        type: string
+      media_type:
+        type: string
+      path:
+        type: string
+      run_id:
+        type: string
+      sha256:
+        type: string
+      size:
+        type: integer
+    type: object
+  api.ErrorResponse:
+    properties:
+      error:
+        type: string
+    type: object
+  api.RunResponse:
+    properties:
+      backend_id:
+        type: string
+      cleanup_state:
+        $ref: '#/definitions/core.CleanupState'
+      cursor:
+        type: string
+      exit:
+        $ref: '#/definitions/core.ProcessExit'
+      id:
+        type: string
+      observer_epoch:
+        type: integer
+      process:
+        $ref: '#/definitions/core.ProcessRef'
+      sandbox:
+        $ref: '#/definitions/core.SandboxRef'
+      state:
+        $ref: '#/definitions/core.RunState'
+      task_id:
+        type: string
+      verified_stopped:
+        type: boolean
+    type: object
+  api.SubmitRequest:
+    properties:
+      agent_id:
+        default: demo
+        type: string
+      agent_version:
+        default: "1"
+        type: string
+      config:
+        type: object
+      deadline:
+        description: Deadline and timeout_seconds are mutually exclusive; an explicit
+          deadline must be 5 seconds to 90 minutes in the future.
+        type: string
+      profile_id:
+        default: default
+        type: string
+      profile_version:
+        default: "1"
+        type: string
+      prompt:
+        description: Prompt is required and must contain 1–65536 UTF-8 bytes after
+          checking for blank input.
+        type: string
+      timeout_seconds:
+        default: 3600
+        maximum: 5400
+        minimum: 5
+        type: integer
+    required:
+    - prompt
+    type: object
+  api.TaskResponse:
+    properties:
+      agent_id:
+        type: string
+      agent_version:
+        type: string
+      cancel_requested:
+        type: boolean
+      config:
+        type: object
+      created_at:
+        type: string
+      deadline:
+        type: string
+      dispatch_error:
+        type: string
+      id:
+        type: string
+      profile_id:
+        type: string
+      profile_version:
+        type: string
+      prompt:
+        type: string
+      reason:
+        type: string
+      run:
+        $ref: '#/definitions/api.RunResponse'
+      state:
+        $ref: '#/definitions/core.TaskState'
+      workspace_id:
+        type: string
+    type: object
+  core.AdapterIdentity:
+    properties:
+      ID:
+        type: string
+      Version:
+        type: string
+    type: object
+  core.CleanupState:
+    enum:
+    - NOT_REQUIRED
+    - PENDING
+    - DONE
+    - BLOCKED
+    type: string
+    x-enum-varnames:
+    - CleanupNotRequired
+    - CleanupPending
+    - CleanupDone
+    - CleanupBlocked
+  core.OperationKey:
+    properties:
+      RunID:
+        type: string
+      Step:
+        description: Stable logical step; never a Temporal Activity attempt.
+        type: string
+      TaskID:
+        type: string
+      WorkspaceID:
+        type: string
+    type: object
+  core.ProcessExit:
+    properties:
+      Code:
+        type: integer
+      FinishedAt:
+        type: string
+      Signal:
+        type: string
+    type: object
+  core.ProcessRef:
+    properties:
+      ID:
+        description: Stable execution receipt, not an unqualified reusable OS PID.
+        type: string
+      Key:
+        $ref: '#/definitions/core.OperationKey'
+      Sandbox:
+        $ref: '#/definitions/core.SandboxRef'
+    type: object
+  core.RunState:
+    enum:
+    - PREPARING
+    - STARTING
+    - RUNNING
+    - STOPPING
+    - FINALIZING
+    - SUCCEEDED
+    - FAILED
+    - CANCELED
+    type: string
+    x-enum-varnames:
+    - RunPreparing
+    - RunStarting
+    - RunRunning
+    - RunStopping
+    - RunFinalizing
+    - RunSucceeded
+    - RunFailed
+    - RunCanceled
+  core.SandboxRef:
+    properties:
+      BackendID:
+        type: string
+      ID:
+        type: string
+      Key:
+        $ref: '#/definitions/core.OperationKey'
+    type: object
+  core.TaskState:
+    enum:
+    - QUEUED
+    - RUNNING
+    - CANCELING
+    - SUCCEEDED
+    - FAILED
+    - CANCELED
+    type: string
+    x-enum-varnames:
+    - TaskQueued
+    - TaskRunning
+    - TaskCanceling
+    - TaskSucceeded
+    - TaskFailed
+    - TaskCanceled
+info:
+  contact: {}
+  description: Workspace-scoped task execution. SSE emits log events with resumable
+    IDs and status snapshots; it closes after terminal events are drained.
+  title: Makez API
+  version: "1.0"
+paths:
+  /agents:
+    get:
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            items:
+              $ref: '#/definitions/core.AdapterIdentity'
+            type: array
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/api.ErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: List agents
+      tags:
+      - agents
+  /artifacts/{id}/content:
+    get:
+      parameters:
+      - description: Artifact ID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/octet-stream
+      responses:
+        "200":
+          description: OK
+          headers:
+            Content-Disposition:
+              description: attachment; filename=...
+              type: string
+          schema:
+            type: file
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/api.ErrorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/api.ErrorResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/api.ErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Download artifact
+      tags:
+      - artifacts
+  /tasks:
+    get:
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            items:
+              $ref: '#/definitions/api.TaskResponse'
+            type: array
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/api.ErrorResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/api.ErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: List tasks
+      tags:
+      - tasks
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: 1–128 bytes; reuse only with identical input
+        in: header
+        name: Idempotency-Key
+        required: true
+        type: string
+      - description: Task input; unknown fields and multiple JSON objects are rejected
+        in: body
+        name: task
+        required: true
+        schema:
+          $ref: '#/definitions/api.SubmitRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Idempotent replay
+          schema:
+            $ref: '#/definitions/api.TaskResponse'
+        "202":
+          description: Created
+          schema:
+            $ref: '#/definitions/api.TaskResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/api.ErrorResponse'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/api.ErrorResponse'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/api.ErrorResponse'
+        "409":
+          description: Conflict
+          schema:
+            $ref: '#/definitions/api.ErrorResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/api.ErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Submit task
+      tags:
+      - tasks
+  /tasks/{id}:
+    get:
+      parameters:
+      - description: Task ID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/api.TaskResponse'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/api.ErrorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/api.ErrorResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/api.ErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Get task
+      tags:
+      - tasks
+  /tasks/{id}/artifacts:
+    get:
+      parameters:
+      - description: Task ID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            items:
+              $ref: '#/definitions/api.ArtifactResponse'
+            type: array
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/api.ErrorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/api.ErrorResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/api.ErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: List task artifacts
+      tags:
+      - tasks
+  /tasks/{id}/cancel:
+    post:
+      parameters:
+      - description: Task ID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/api.TaskResponse'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/api.ErrorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/api.ErrorResponse'
+        "409":
+          description: Conflict
+          schema:
+            $ref: '#/definitions/api.ErrorResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/api.ErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Cancel task
+      tags:
+      - tasks
+  /tasks/{id}/events:
+    get:
+      description: log events carry a monotonic id and EventResponse JSON. status
+        events carry TaskResponse JSON without an id. Last-Event-ID takes precedence
+        over after. Terminal streams close only after all stored events are drained.
+        Reconnect after disconnection with the last received id.
+      parameters:
+      - description: Task ID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Last received log event ID
+        in: header
+        minimum: 0
+        name: Last-Event-ID
+        type: integer
+      - description: Fallback event cursor
+        in: query
+        minimum: 0
+        name: after
+        type: integer
+      produces:
+      - text/event-stream
+      responses:
+        "200":
+          description: 'SSE frames: id, event (log/status), data (JSON)'
+          schema:
+            type: string
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/api.ErrorResponse'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/api.ErrorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/api.ErrorResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/api.ErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Stream task events
+      tags:
+      - tasks
+securityDefinitions:
+  BearerAuth:
+    description: Enter Bearer followed by the workspace API key.
+    in: header
+    name: Authorization
+    type: apiKey
+swagger: "2.0"

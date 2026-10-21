@@ -56,24 +56,24 @@ func (s *Store) AppendOutput(ctx context.Context, runID string, epoch int64, cur
 	}
 	return tx.Commit(ctx)
 }
+
+const EventPageSize = 500
+
 func (s *Store) Events(ctx context.Context, workspace, taskID string, after int64) ([]Event, error) {
-	if _, err := s.Get(ctx, workspace, taskID); err != nil {
-		return nil, err
+	var raw []byte
+	// The outer row checks workspace ownership even when no run/events exist.
+	err := s.pool.QueryRow(ctx, `SELECT COALESCE((SELECT jsonb_agg(page ORDER BY page.seq) FROM
+ (SELECT e.seq,e.run_id,e.type,e.payload,e.created_at FROM makez_events e JOIN makez_runs r ON r.id=e.run_id WHERE r.task_id=t.id AND e.seq>$3 ORDER BY e.seq LIMIT 500) page),'[]'::jsonb)
+ FROM makez_tasks t WHERE t.workspace_id=$1 AND t.id=$2`, workspace, taskID, after).Scan(&raw)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, ErrNotFound
 	}
-	rows, err := s.pool.Query(ctx, `SELECT e.seq,e.run_id,e.type,e.payload,e.created_at FROM makez_events e JOIN makez_runs r ON r.id=e.run_id JOIN makez_tasks t ON t.id=r.task_id WHERE t.workspace_id=$1 AND t.id=$2 AND e.seq>$3 ORDER BY e.seq LIMIT 500`, workspace, taskID, after)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	events := []Event{}
-	for rows.Next() {
-		var e Event
-		if err = rows.Scan(&e.Seq, &e.RunID, &e.Type, &e.Payload, &e.CreatedAt); err != nil {
-			return nil, err
-		}
-		events = append(events, e)
-	}
-	return events, rows.Err()
+	var events []Event
+	err = json.Unmarshal(raw, &events)
+	return events, err
 }
 func (s *Store) Artifacts(ctx context.Context, workspace, taskID string) ([]Artifact, error) {
 	if _, err := s.Get(ctx, workspace, taskID); err != nil {
