@@ -4,7 +4,6 @@ import {
   ArrowDown,
   ArrowDownToLine,
   ArrowUp,
-  Check,
   ChevronRight,
   CircleDot,
   File,
@@ -284,14 +283,11 @@ function Workspace({
       <aside className={`sidebar ${sidebarOpen ? "sidebar-open" : ""}`} aria-label="任务导航">
         <div className="brand">
           <img src="/favicon.svg" width="30" height="30" alt="" />
-          <span>
-            makez<span className="brand-dot">.</span>
-          </span>
-          <span className="version">PREVIEW</span>
+          <span>makez</span>
         </div>
         <Button className="new-task" variant="outline" onClick={() => select("")}>
           <Plus />
-          新任务<span className="new-task-hint">创造从这里开始</span>
+          新任务
         </Button>
         <div className="task-search">
           <Search size={15} />
@@ -304,17 +300,13 @@ function Workspace({
         </div>
         <div className="section-label">
           <span>最近任务</span>
-          <span>{tasks.length}</span>
+          {tasks.length > 0 && <span>{tasks.length}</span>}
         </div>
         <nav className="task-list" aria-label="最近任务">
           {loading ? (
             <p className="sidebar-empty">正在读取任务…</p>
           ) : !token ? (
-            <p className="sidebar-empty">
-              连接工作区后，
-              <br />
-              你的任务会出现在这里。
-            </p>
+            <p className="sidebar-empty">连接工作区后，你的任务会出现在这里。</p>
           ) : !filtered.length ? (
             <p className="sidebar-empty">
               {search ? "没有匹配的任务" : "还没有任务，开始一次创造吧。"}
@@ -394,13 +386,11 @@ function Workspace({
             <ChevronRight size={14} />
             <strong>{active ? "任务详情" : "新任务"}</strong>
           </div>
-          <div className="header-right">
-            {current ? (
+          {current && (
+            <div className="header-right">
               <Status state={current.state} />
-            ) : (
-              <span className="header-note">让创造变简单</span>
-            )}
-          </div>
+            </div>
+          )}
         </header>
         {active ? (
           <div className="task-workspace" key={active}>
@@ -671,12 +661,7 @@ function NewTask({
     <section className="create-page">
       <div className="create-content">
         <div className="create-intro">
-          <div className="intro-symbol">
-            <Layers2 size={26} strokeWidth={1.5} />
-          </div>
-          <span className="eyebrow">MAKE SOMETHING</span>
           <h1>把想法，变成作品。</h1>
-          <p>描述你想完成的事情，交给 Agent 去实现。</p>
         </div>
         <form onSubmit={submit} className="composer">
           <label className="sr-only" htmlFor="prompt">
@@ -789,8 +774,7 @@ function NewTask({
                 )
               }
             >
-              <span>01</span>做一个待办工具
-              <ChevronRight size={14} />
+              做一个待办工具
             </button>
             <button
               type="button"
@@ -800,16 +784,11 @@ function NewTask({
                 )
               }
             >
-              <span>02</span>搭建个人作品集
-              <ChevronRight size={14} />
+              搭建个人作品集
             </button>
           </div>
         </div>
       </div>
-      <footer className="create-footer">
-        <Check size={13} />
-        独立执行<span>·</span>实时进度<span>·</span>成果交付
-      </footer>
     </section>
   );
 }

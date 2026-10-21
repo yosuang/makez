@@ -37,6 +37,7 @@
   --text-faint: #8d8d8d;
   --success: #8eae86;
   --warning: #c6b48a;
+  --overlay: rgb(0 0 0 / 80%);
 }
 
 @theme inline {
@@ -68,6 +69,7 @@
   --color-text-faint: var(--text-faint);
   --color-success: var(--success);
   --color-warning: var(--warning);
+  --color-overlay: var(--overlay);
   --radius-sm: calc(var(--radius) - 4px);
   --radius-md: calc(var(--radius) - 2px);
   --radius-lg: var(--radius);
