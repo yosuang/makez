@@ -1,9 +1,9 @@
-// Command icon writes the makez icon as one SVG.
+// Command icon writes the makez icon as two SVGs from one mark.
 //
-// makez.svg is the approved mark scaled uniformly by 1.22, with its
-// bounding box centered on the 1024 canvas. The file sets only a viewBox,
-// so it scales to its container. The tile is a full black square; the
-// mark is white.
+// Both files use the approved mark scaled uniformly by 1.22, with its
+// bounding box centered on the 1024 canvas. Each file sets only a viewBox,
+// so it scales to its container. makez-dark.svg is a full black square
+// with a white mark. makez-light.svg has no background and a black mark.
 package main
 
 import (
@@ -59,11 +59,17 @@ func main() {
 	if err != nil {
 		fail(err)
 	}
-	path := filepath.Join(root, "build", "icon", "makez.svg")
-	if err = os.WriteFile(path, svg(), 0o644); err != nil {
+	dir := filepath.Join(root, "build", "icon")
+	dark := filepath.Join(dir, "makez-dark.svg")
+	light := filepath.Join(dir, "makez-light.svg")
+	if err = os.WriteFile(dark, darkSVG(), 0o644); err != nil {
 		fail(err)
 	}
-	fmt.Println(filepath.Join("build", "icon", "makez.svg"))
+	if err = os.WriteFile(light, lightSVG(), 0o644); err != nil {
+		fail(err)
+	}
+	fmt.Println(filepath.Join("build", "icon", "makez-dark.svg"))
+	fmt.Println(filepath.Join("build", "icon", "makez-light.svg"))
 }
 
 func fail(err error) {
@@ -89,20 +95,32 @@ func moduleRoot() (string, error) {
 	}
 }
 
-// svg draws the black square and the three white pieces: the top bar with
-// the diagonal and its foot, the accent, and the bottom bar.
-func svg() []byte {
-	mark := fmt.Sprintf(
+// mark is the three pieces shared by both files: the top bar with the
+// diagonal and its foot, the accent, and the bottom bar.
+func mark() string {
+	return fmt.Sprintf(
 		"M%d %dH%dL%d %dV%dL%d %dH%dZ M%d %dH%dL%d %dH%dZ M%d %dH%dV%dH%dZ",
 		topLeft, topY, topPointX, footX, footBottom, footTop, meetX, topBottom, topLeft,
 		accentTopLeft, accentTop, accentTopRight, accentTopRight-accentRun, accentBottom, accentTopLeft-accentRun,
 		bottomTopLeft, bottomTop, bottomRight, bottomBottom, bottomBotLeft,
 	)
+}
+
+func darkSVG() []byte {
 	return []byte(fmt.Sprintf(
 		"<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 %d %d\">\n"+
 			"<rect width=\"%d\" height=\"%d\" fill=\"#000\"/>\n"+
 			"<path fill=\"#fff\" d=\"%s\"/>\n"+
 			"</svg>\n",
-		view, view, view, view, mark,
+		view, view, view, view, mark(),
+	))
+}
+
+func lightSVG() []byte {
+	return []byte(fmt.Sprintf(
+		"<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 %d %d\">\n"+
+			"<path fill=\"#000\" d=\"%s\"/>\n"+
+			"</svg>\n",
+		view, view, mark(),
 	))
 }
