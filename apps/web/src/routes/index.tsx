@@ -18,16 +18,16 @@ import {
   Square,
   Terminal,
 } from "lucide-react";
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Textarea } from "@/components/ui/textarea";
+import { Button } from "@makez/ui/components/button";
+import { Input } from "@makez/ui/components/input";
+import { Textarea } from "@makez/ui/components/textarea";
 import {
   Dialog,
   DialogContent,
   DialogDescription,
   DialogHeader,
   DialogTitle,
-} from "@/components/ui/dialog";
+} from "@makez/ui/components/dialog";
 import { api, eventText, terminal, type Agent, type Artifact, type Task } from "@/lib/api";
 import { useTask } from "@/lib/use-task";
 
