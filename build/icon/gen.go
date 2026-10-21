@@ -1,8 +1,9 @@
 // Command icon writes the makez icon as one SVG.
 //
-// makez.svg is the geometry traced from the approved 1024×1024 artwork.
-// The file sets only a viewBox, so it scales to its container. The tile
-// is a full black square; the mark is white.
+// makez.svg is the approved mark scaled uniformly by 1.22, with its
+// bounding box centered on the 1024 canvas. The file sets only a viewBox,
+// so it scales to its container. The tile is a full black square; the
+// mark is white.
 package main
 
 import (
@@ -12,45 +13,45 @@ import (
 )
 
 const (
-	// view is the shared coordinate space. The constants below are pixel
-	// positions measured on the 1024 reference (half-coverage edges).
+	// view is the shared coordinate space. The constants below are the
+	// integer pixel positions of the mark after the 1.22 scale and centering.
 	view = 1024
 
 	// Top bar. The right end is the sharp top of the diagonal.
-	topLeft   = 277
-	topY      = 204
-	topBottom = 310
-	topPointX = 779
+	topLeft   = 216
+	topY      = 143
+	topBottom = 272
+	topPointX = 829
 
 	// The diagonal's upper-left edge runs from the underside of the top
 	// bar to the top of the vertical foot.
-	meetX   = 567
-	footX   = 260
-	footTop = 690
+	meetX   = 570
+	footX   = 195
+	footTop = 736
 
 	// The southeast edge is the straight cut from the top point to the
 	// bottom of the foot, where it meets the vertical edge.
-	footBottom = 809
+	footBottom = 881
 
 	// Bottom bar. It does not join the diagonal. Its left end is a slant,
 	// and the black channel beside the accent continues between that slant
 	// and the foot.
-	bottomTop     = 693
-	bottomBottom  = 806
-	bottomRight   = 767
-	bottomTopLeft = 408
-	bottomBotLeft = 316
+	bottomTop     = 740
+	bottomBottom  = 877
+	bottomRight   = 814
+	bottomTopLeft = 376
+	bottomBotLeft = 264
 
 	// Accent stroke, on the lower-right of the diagonal. The ends are
 	// horizontal. Both long edges share one slope, so the stroke width is
 	// constant; accentRun is how far the stroke shifts left from its top
 	// to its bottom. It starts just below the top bar and stops above the
 	// bottom bar.
-	accentTop      = 314
-	accentBottom   = 666
-	accentTopLeft  = 725
-	accentTopRight = 769
-	accentRun      = 295
+	accentTop      = 277
+	accentBottom   = 707
+	accentTopLeft  = 763
+	accentTopRight = 816
+	accentRun      = 360
 )
 
 func main() {
