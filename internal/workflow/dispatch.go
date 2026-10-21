@@ -3,8 +3,10 @@ package workflow
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/makez-dev/makez/internal/core"
@@ -26,8 +28,7 @@ func start(ctx context.Context, c client.Client, id string, wf any, in Input) er
 		policy = enums.WORKFLOW_ID_REUSE_POLICY_ALLOW_DUPLICATE_FAILED_ONLY
 	}
 	_, err := c.ExecuteWorkflow(ctx, client.StartWorkflowOptions{ID: id, TaskQueue: Queue, WorkflowIDReusePolicy: policy, WorkflowExecutionErrorWhenAlreadyStarted: true}, wf, in)
-	var already *serviceerror.WorkflowExecutionAlreadyStarted
-	if errors.As(err, &already) {
+	if _, ok := errors.AsType[*serviceerror.WorkflowExecutionAlreadyStarted](err); ok {
 		return nil
 	}
 	return err
@@ -35,26 +36,31 @@ func start(ctx context.Context, c client.Client, id string, wf any, in Input) er
 
 // Dispatch retries durable delivery only; Temporal remains the execution scheduler.
 func Dispatch(ctx context.Context, db *store.Store, c client.Client) {
-	tick := time.NewTicker(time.Second)
-	defer tick.Stop()
-	iteration := 0
-	for {
-		dispatchOnce(ctx, db, c)
-		if iteration%15 == 0 {
-			reconcile(ctx, db, c)
-		}
-		iteration++
+	var wg sync.WaitGroup
+	wg.Go(func() {
+		cursor := store.RecoveryCursor{}
+		repeat(ctx, 15*time.Second, func() { cursor = reconcile(ctx, db, c, cursor) })
+	})
+	defer wg.Wait()
+	repeat(ctx, time.Second, func() { dispatchOnce(ctx, db, c) })
+}
+
+func repeat(ctx context.Context, interval time.Duration, fn func()) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for ctx.Err() == nil {
+		fn()
 		select {
 		case <-ctx.Done():
 			return
-		case <-tick.C:
+		case <-ticker.C:
 		}
 	}
 }
 func dispatchOnce(ctx context.Context, db *store.Store, c client.Client) {
 	rows, err := db.Pending(ctx, 50)
 	if err != nil {
-		slog.Error("outbox read failed", "error", err)
+		slog.Error("outbox read failed", "error_type", fmt.Sprintf("%T", err))
 		return
 	}
 	for _, row := range rows {
@@ -75,8 +81,7 @@ func dispatchOnce(ctx context.Context, db *store.Store, c client.Client) {
 			}
 		case "CANCEL_TASK":
 			err = c.CancelWorkflow(opCtx, ID(row.WorkspaceID, row.TaskID), "")
-			var missing *serviceerror.NotFound
-			if errors.As(err, &missing) {
+			if _, ok := errors.AsType[*serviceerror.NotFound](err); ok {
 				t, e := db.Get(opCtx, row.WorkspaceID, row.TaskID)
 				if e == nil && store.IsTerminal(t.State) {
 					err = nil
@@ -90,33 +95,47 @@ func dispatchOnce(ctx context.Context, db *store.Store, c client.Client) {
 		cancel()
 		if err == nil {
 			if e := db.Delivered(ctx, row.ID); e != nil {
-				slog.Error("outbox acknowledgment failed", "error", e)
+				slog.Error("outbox acknowledgment failed", "error_type", fmt.Sprintf("%T", e))
 			}
 		} else {
-			db.RetryOutbox(ctx, row.ID, "Temporal delivery unavailable")
-			slog.Warn("outbox delivery deferred", "task", row.TaskID, "command", row.Command, "error", err)
+			if db.Metrics != nil {
+				db.Metrics.OutboxRetries.Inc()
+			}
+			if retryErr := db.RetryOutbox(ctx, row.ID, "Temporal delivery unavailable"); retryErr != nil {
+				slog.Error("outbox retry persistence failed", "task_id", row.TaskID, "error_type", fmt.Sprintf("%T", retryErr))
+			}
+			slog.Warn("outbox delivery deferred", "task", row.TaskID, "command", row.Command, "error_type", fmt.Sprintf("%T", err))
 		}
 	}
 }
-func reconcile(ctx context.Context, db *store.Store, c client.Client) {
-	tasks, err := db.Recoverable(ctx)
+func reconcile(ctx context.Context, db *store.Store, c client.Client, cursor store.RecoveryCursor) store.RecoveryCursor {
+	if cursor.Through.IsZero() {
+		cursor.Through = time.Now()
+	}
+	tasks, err := db.Recoverable(ctx, cursor)
 	if err != nil {
-		return
+		slog.Error("recovery scan failed", "error_type", fmt.Sprintf("%T", err))
+		return cursor
 	}
 	for _, t := range tasks {
 		if ctx.Err() != nil {
-			return
+			return cursor
 		}
+		cursor.CreatedAt, cursor.ID = t.CreatedAt, t.ID
 		if t.Run == nil {
 			if !store.IsTerminal(t.State) && (!time.Now().Before(t.Deadline) || time.Since(t.CreatedAt) > 10*time.Minute) {
-				db.Publish(ctx, t.WorkspaceID, t.ID, core.TaskFailed, "DEADLINE_EXCEEDED", true, core.CleanupNotRequired, nil)
+				if err := db.Publish(ctx, t.WorkspaceID, t.ID, core.TaskFailed, "DEADLINE_EXCEEDED", true, core.CleanupNotRequired, nil); err != nil {
+					slog.Error("expired task publication failed", "task_id", t.ID, "error_type", fmt.Sprintf("%T", err))
+				}
 			}
 			continue
 		}
 		if store.IsTerminal(t.State) {
 			if t.Run.Cleanup == core.CleanupPending {
 				checkCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-				_ = start(checkCtx, c, CleanupID(t.WorkspaceID, t.ID), Cleanup, Input{t.WorkspaceID, t.ID})
+				if err := start(checkCtx, c, CleanupID(t.WorkspaceID, t.ID), Cleanup, Input{t.WorkspaceID, t.ID}); err != nil {
+					slog.Warn("cleanup dispatch failed", "task_id", t.ID, "error_type", fmt.Sprintf("%T", err))
+				}
 				cancel()
 			}
 			continue
@@ -124,8 +143,9 @@ func reconcile(ctx context.Context, db *store.Store, c client.Client) {
 		checkCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
 		desc, err := c.DescribeWorkflowExecution(checkCtx, ID(t.WorkspaceID, t.ID), "")
 		cancel()
-		var missing *serviceerror.NotFound
-		if err != nil && !errors.As(err, &missing) {
+		_, missing := errors.AsType[*serviceerror.NotFound](err)
+		if err != nil && !missing {
+			slog.Warn("workflow inspection failed", "task_id", t.ID, "error_type", fmt.Sprintf("%T", err))
 			continue
 		}
 		if err == nil && desc.WorkflowExecutionInfo.Status == enums.WORKFLOW_EXECUTION_STATUS_RUNNING {
@@ -136,7 +156,11 @@ func reconcile(ctx context.Context, db *store.Store, c client.Client) {
 		err = start(recoveryCtx, c, "makez/recover/"+t.WorkspaceID+"/"+t.ID, Recovery, in)
 		cancel()
 		if err != nil {
-			slog.Error("recovery dispatch failed", "task", t.ID, "error", err)
+			slog.Error("recovery dispatch failed", "task", t.ID, "error_type", fmt.Sprintf("%T", err))
 		}
 	}
+	if len(tasks) < store.RecoveryPageSize {
+		return store.RecoveryCursor{}
+	}
+	return cursor
 }

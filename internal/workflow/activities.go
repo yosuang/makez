@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"slices"
 	"strings"
 	"time"
@@ -512,6 +513,10 @@ func wait(ctx context.Context, d time.Duration) error {
 // while that intent is unresolved; an empty list alone is not a completion receipt.
 func (a *Activities) deleteForRun(ctx context.Context, t store.Task) error {
 	if err := a.Provider.Delete(ctx, key(t, "sandbox")); err != nil {
+		if a.DB.Metrics != nil {
+			a.DB.Metrics.CleanupFailures.Inc()
+		}
+		slog.WarnContext(ctx, "sandbox cleanup failed", "task_id", t.ID, "run_id", t.Run.ID, "error_type", fmt.Sprintf("%T", err))
 		return err
 	}
 	if t.Run.Sandbox == nil {

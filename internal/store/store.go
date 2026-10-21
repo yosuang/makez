@@ -16,15 +16,36 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/makez-dev/makez/internal/core"
+	"github.com/makez-dev/makez/internal/telemetry"
 )
 
 //go:embed schema.sql
 var schema string
 
-type Store struct{ pool *pgxpool.Pool }
+type Store struct {
+	pool    *pgxpool.Pool
+	Metrics *telemetry.Metrics
+}
 
 func Open(ctx context.Context, url string) (*Store, error) {
-	pool, err := pgxpool.New(ctx, url)
+	return OpenWithLimit(ctx, url, 16)
+}
+
+// OpenWithLimit fixes a per-process connection budget independent of CPU count.
+func OpenWithLimit(ctx context.Context, url string, maxConns int32) (*Store, error) {
+	if maxConns < 2 || maxConns > 256 {
+		return nil, fmt.Errorf("database pool limit must be 2–256")
+	}
+	config, err := pgxpool.ParseConfig(url)
+	if err != nil {
+		return nil, err
+	}
+	config.MaxConns = maxConns
+	if config.MinConns > maxConns || config.MinIdleConns > maxConns {
+		return nil, fmt.Errorf("database pool minimum exceeds budget")
+	}
+	config.ConnConfig.ConnectTimeout = 5 * time.Second
+	pool, err := pgxpool.NewWithConfig(ctx, config)
 	if err != nil {
 		return nil, err
 	}
@@ -47,7 +68,14 @@ func (s *Store) Migrate(ctx context.Context) error {
 	if _, err = tx.Exec(ctx, `CREATE TABLE IF NOT EXISTS makez_schema_migrations (version integer PRIMARY KEY, applied_at timestamptz NOT NULL DEFAULT now())`); err != nil {
 		return err
 	}
-	for index, migration := range []string{schema, `ALTER TABLE makez_runs ADD COLUMN IF NOT EXISTS agent_plan jsonb`} {
+	for index, migration := range []string{schema, `ALTER TABLE makez_runs ADD COLUMN IF NOT EXISTS agent_plan jsonb`, `
+ALTER TABLE makez_runs ADD COLUMN started_at timestamptz;
+-- Historical outbox creation times are unknown; age starts at this migration.
+ALTER TABLE makez_outbox ADD COLUMN created_at timestamptz NOT NULL DEFAULT now();
+CREATE INDEX makez_tasks_recovery_cursor ON makez_tasks(created_at,id);
+CREATE INDEX makez_outbox_pending_created ON makez_outbox(created_at) WHERE delivered_at IS NULL;
+CREATE INDEX makez_runs_cleanup_needed ON makez_runs(cleanup) WHERE cleanup IN ('PENDING','BLOCKED');
+`} {
 		version := index + 1
 		var applied bool
 		if err = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM makez_schema_migrations WHERE version=$1)`, version).Scan(&applied); err != nil {
@@ -109,7 +137,7 @@ func scanTask(row rowScanner) (Task, error) {
 func scanRun(row rowScanner) (*Run, error) {
 	var r Run
 	var sandbox, process, exit, result, plan []byte
-	err := row.Scan(&r.ID, &r.TaskID, &r.State, &r.BackendID, &sandbox, &process, &r.Cursor, &r.ParserState, &r.ObserverEpoch, &exit, &r.Cleanup, &r.VerifiedStopped, &result, &plan)
+	err := row.Scan(&r.ID, &r.TaskID, &r.State, &r.BackendID, &sandbox, &process, &r.Cursor, &r.ParserState, &r.ObserverEpoch, &exit, &r.Cleanup, &r.VerifiedStopped, &result, &plan, &r.StartedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}
@@ -129,7 +157,7 @@ func scanRun(row rowScanner) (*Run, error) {
 	return &r, nil
 }
 
-const runColumns = `id,task_id,state,backend_id,sandbox,process,cursor,parser_state,observer_epoch,process_exit,cleanup,verified_stopped,prepared_result,agent_plan`
+const runColumns = `id,task_id,state,backend_id,sandbox,process,cursor,parser_state,observer_epoch,process_exit,cleanup,verified_stopped,prepared_result,agent_plan,started_at`
 
 func loadRun(ctx context.Context, q interface {
 	QueryRow(context.Context, string, ...any) pgx.Row
@@ -248,8 +276,23 @@ func (s *Store) Get(ctx context.Context, workspace, id string) (Task, error) {
 func (s *Store) List(ctx context.Context, workspace string) ([]Task, error) {
 	return s.list(ctx, "WHERE t.workspace_id=$1 ORDER BY t.created_at DESC LIMIT 100", workspace)
 }
-func (s *Store) Recoverable(ctx context.Context) ([]Task, error) {
-	return s.list(ctx, `WHERE t.state NOT IN ('SUCCEEDED','FAILED','CANCELED') OR EXISTS(SELECT 1 FROM makez_runs r WHERE r.task_id=t.id AND r.cleanup = 'PENDING') ORDER BY t.created_at LIMIT 500`)
+
+// RecoveryCursor uses an immutable order, so old active tasks cannot starve later ones.
+type RecoveryCursor struct {
+	CreatedAt time.Time
+	ID        string
+	// Through bounds one sweep so continuous arrivals cannot prevent a restart.
+	Through time.Time
+}
+
+const RecoveryPageSize = 100
+
+func (s *Store) Recoverable(ctx context.Context, after RecoveryCursor) ([]Task, error) {
+	through := after.Through
+	if through.IsZero() {
+		through = time.Now()
+	}
+	return s.list(ctx, `WHERE (t.state NOT IN ('SUCCEEDED','FAILED','CANCELED') OR EXISTS(SELECT 1 FROM makez_runs r WHERE r.task_id=t.id AND r.cleanup='PENDING')) AND ($2='' OR (t.created_at,t.id)>($1,$2)) AND t.created_at <= $3 ORDER BY t.created_at,t.id LIMIT 100`, after.CreatedAt, after.ID, through)
 }
 func (s *Store) list(ctx context.Context, where string, args ...any) ([]Task, error) {
 	rows, err := s.pool.Query(ctx, "SELECT "+taskColumns+" FROM makez_tasks t "+where, args...)
@@ -288,7 +331,8 @@ func (s *Store) Cancel(ctx context.Context, workspace, id string) (Task, error) 
 	if err != nil {
 		return Task{}, err
 	}
-	if !IsTerminal(t.State) {
+	wasTerminal := IsTerminal(t.State)
+	if !wasTerminal {
 		t.CancelRequested = true
 		if t.Run == nil {
 			t.State = core.TaskCanceled
@@ -309,6 +353,9 @@ func (s *Store) Cancel(ctx context.Context, workspace, id string) (Task, error) 
 	if err = tx.Commit(ctx); err != nil {
 		return Task{}, err
 	}
+	if !wasTerminal && IsTerminal(t.State) {
+		s.Metrics.Result(string(t.State), time.Time{})
+	}
 	return t, nil
 }
 func (s *Store) InitializeRun(ctx context.Context, workspace, id, backend string) (Task, error) {
@@ -324,14 +371,17 @@ func (s *Store) InitializeRun(ctx context.Context, workspace, id, backend string
 	if err != nil {
 		return Task{}, err
 	}
+	initialized, expired := false, false
 	if !IsTerminal(t.State) && t.Run == nil {
 		if !t.Deadline.After(time.Now()) || time.Since(t.CreatedAt) > 10*time.Minute {
+			expired = true
 			t.State = core.TaskFailed
 			t.Reason = "DEADLINE_EXCEEDED"
 			_, err = tx.Exec(ctx, `UPDATE makez_tasks SET state=$2,reason=$3,version=version+1 WHERE id=$1`, id, t.State, t.Reason)
 		} else {
-			t.Run = &Run{ID: newID(), TaskID: id, State: core.RunPreparing, BackendID: backend, Cleanup: core.CleanupNotRequired}
-			_, err = tx.Exec(ctx, `INSERT INTO makez_runs(id,task_id,state,backend_id) VALUES($1,$2,$3,$4)`, t.Run.ID, id, t.Run.State, backend)
+			initialized = true
+			t.Run = &Run{StartedAt: new(time.Now()), ID: newID(), TaskID: id, State: core.RunPreparing, BackendID: backend, Cleanup: core.CleanupNotRequired}
+			_, err = tx.Exec(ctx, `INSERT INTO makez_runs(id,task_id,state,backend_id,started_at) VALUES($1,$2,$3,$4,$5)`, t.Run.ID, id, t.Run.State, backend, t.Run.StartedAt)
 			if err == nil {
 				_, err = tx.Exec(ctx, `UPDATE makez_tasks SET state='RUNNING',version=version+1 WHERE id=$1`, id)
 				t.State = core.TaskRunning
@@ -343,6 +393,12 @@ func (s *Store) InitializeRun(ctx context.Context, workspace, id, backend string
 	}
 	if err = tx.Commit(ctx); err != nil {
 		return Task{}, err
+	}
+	if initialized && s.Metrics != nil {
+		s.Metrics.Queue.Observe(max(0, time.Since(t.CreatedAt).Seconds()))
+	}
+	if expired {
+		s.Metrics.Result(string(t.State), time.Time{})
 	}
 	return t, nil
 }
