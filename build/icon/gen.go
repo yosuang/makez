@@ -1,7 +1,7 @@
-// Command icon writes the makez icon as two SVGs.
+// Command icon writes the makez icon as one SVG.
 //
-// makez-16.svg and makez-32.svg share one geometry, traced from the
-// approved 1024×1024 artwork. Only the width and height differ. The tile
+// makez.svg is the geometry traced from the approved 1024×1024 artwork.
+// The file sets only a viewBox, so it scales to its container. The tile
 // is a full black square; the mark is white.
 package main
 
@@ -58,14 +58,11 @@ func main() {
 	if err != nil {
 		fail(err)
 	}
-	dir := filepath.Join(root, "build", "icon")
-	for _, size := range []int{16, 32} {
-		name := fmt.Sprintf("makez-%d.svg", size)
-		if err = os.WriteFile(filepath.Join(dir, name), svg(size), 0o644); err != nil {
-			fail(err)
-		}
-		fmt.Println(filepath.Join("build", "icon", name))
+	path := filepath.Join(root, "build", "icon", "makez.svg")
+	if err = os.WriteFile(path, svg(), 0o644); err != nil {
+		fail(err)
 	}
+	fmt.Println(filepath.Join("build", "icon", "makez.svg"))
 }
 
 func fail(err error) {
@@ -93,7 +90,7 @@ func moduleRoot() (string, error) {
 
 // svg draws the black square and the three white pieces: the top bar with
 // the diagonal and its foot, the accent, and the bottom bar.
-func svg(size int) []byte {
+func svg() []byte {
 	mark := fmt.Sprintf(
 		"M%d %dH%dL%d %dV%dL%d %dH%dZ M%d %dH%dL%d %dH%dZ M%d %dH%dV%dH%dZ",
 		topLeft, topY, topPointX, footX, footBottom, footTop, meetX, topBottom, topLeft,
@@ -101,10 +98,10 @@ func svg(size int) []byte {
 		bottomTopLeft, bottomTop, bottomRight, bottomBottom, bottomBotLeft,
 	)
 	return []byte(fmt.Sprintf(
-		"<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"%d\" height=\"%d\" viewBox=\"0 0 %d %d\">\n"+
+		"<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 %d %d\">\n"+
 			"<rect width=\"%d\" height=\"%d\" fill=\"#000\"/>\n"+
 			"<path fill=\"#fff\" d=\"%s\"/>\n"+
 			"</svg>\n",
-		size, size, view, view, view, view, mark,
+		view, view, view, view, mark,
 	))
 }
