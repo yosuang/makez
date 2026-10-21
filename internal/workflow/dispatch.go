@@ -99,7 +99,7 @@ func dispatchOnce(ctx context.Context, db *store.Store, c client.Client) {
 			}
 		} else {
 			if db.Metrics != nil {
-				db.Metrics.OutboxRetries.Inc()
+				db.Metrics.OutboxRetries.Add(ctx, 1)
 			}
 			if retryErr := db.RetryOutbox(ctx, row.ID, "Temporal delivery unavailable"); retryErr != nil {
 				slog.Error("outbox retry persistence failed", "task_id", row.TaskID, "error_type", fmt.Sprintf("%T", retryErr))

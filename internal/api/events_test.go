@@ -14,12 +14,11 @@ import (
 
 	"github.com/makez-dev/makez/internal/core"
 	"github.com/makez-dev/makez/internal/store"
-	"github.com/makez-dev/makez/internal/telemetry"
 )
 
 func TestSSEFlushAndClientDisconnect(t *testing.T) {
 	done := make(chan string, 1)
-	s := &Server{Metrics: telemetry.New()}
+	s := &Server{Metrics: newTestMetrics(t)}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		reason, _ := streamEvents(r.Context(), w, 0, time.Second, func(ctx context.Context, _ int64) (store.Task, []store.Event, error) {
 			<-ctx.Done()

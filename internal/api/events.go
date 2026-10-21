@@ -13,6 +13,8 @@ import (
 
 	"github.com/labstack/echo/v5"
 	"github.com/makez-dev/makez/internal/store"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/metric"
 )
 
 // events streams persisted log events and task status.
@@ -73,7 +75,7 @@ func (s *Server) events(c *echo.Context) error {
 		reason = "shutdown"
 	}
 	if s.Metrics != nil {
-		s.Metrics.StreamEnds.WithLabelValues(reason).Inc()
+		s.Metrics.StreamEnds.Add(r.Context(), 1, metric.WithAttributes(attribute.String("reason", reason)))
 	}
 	slog.InfoContext(r.Context(), "SSE closed", "request_id", w.Header().Get("X-Request-ID"), "task_id", c.Param("id"), "workspace_id", workspace(r), "reason", reason)
 	return err
@@ -83,8 +85,8 @@ func (s *Server) events(c *echo.Context) error {
 // authorization in the caller and lets transport tests use a real TCP connection.
 func streamEvents(ctx context.Context, w http.ResponseWriter, after int64, timeout time.Duration, fetch func(context.Context, int64) (store.Task, []store.Event, error), s *Server) (string, error) {
 	if s.Metrics != nil {
-		s.Metrics.Streams.Inc()
-		defer s.Metrics.Streams.Dec()
+		s.Metrics.Streams.Add(ctx, 1)
+		defer s.Metrics.Streams.Add(ctx, -1)
 	}
 	controller := http.NewResponseController(w)
 	// Cancellation must interrupt a blocked socket write, not just the polling loop.

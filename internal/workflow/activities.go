@@ -514,7 +514,7 @@ func wait(ctx context.Context, d time.Duration) error {
 func (a *Activities) deleteForRun(ctx context.Context, t store.Task) error {
 	if err := a.Provider.Delete(ctx, key(t, "sandbox")); err != nil {
 		if a.DB.Metrics != nil {
-			a.DB.Metrics.CleanupFailures.Inc()
+			a.DB.Metrics.CleanupFailures.Add(ctx, 1)
 		}
 		slog.WarnContext(ctx, "sandbox cleanup failed", "task_id", t.ID, "run_id", t.Run.ID, "error_type", fmt.Sprintf("%T", err))
 		return err

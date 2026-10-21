@@ -354,7 +354,7 @@ func (s *Store) Cancel(ctx context.Context, workspace, id string) (Task, error) 
 		return Task{}, err
 	}
 	if !wasTerminal && IsTerminal(t.State) {
-		s.Metrics.Result(string(t.State), time.Time{})
+		s.Metrics.Result(ctx, string(t.State), time.Time{})
 	}
 	return t, nil
 }
@@ -395,10 +395,10 @@ func (s *Store) InitializeRun(ctx context.Context, workspace, id, backend string
 		return Task{}, err
 	}
 	if initialized && s.Metrics != nil {
-		s.Metrics.Queue.Observe(max(0, time.Since(t.CreatedAt).Seconds()))
+		s.Metrics.Queue.Record(ctx, max(0, time.Since(t.CreatedAt).Seconds()))
 	}
 	if expired {
-		s.Metrics.Result(string(t.State), time.Time{})
+		s.Metrics.Result(ctx, string(t.State), time.Time{})
 	}
 	return t, nil
 }

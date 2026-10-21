@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -19,6 +20,9 @@ import (
 	"github.com/makez-dev/makez/internal/core"
 	"github.com/makez-dev/makez/internal/store"
 	"github.com/makez-dev/makez/internal/telemetry"
+	"go.opentelemetry.io/otel/metric/noop"
+	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
+	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 )
 
 func TestRoutesAndStrictInputWithoutDatabase(t *testing.T) {
@@ -57,20 +61,18 @@ func TestRoutesAndStrictInputWithoutDatabase(t *testing.T) {
 	}
 }
 
-func TestOperationsAccessAndReadiness(t *testing.T) {
+func TestDocumentationAccessAndReadiness(t *testing.T) {
 	for _, development := range []bool{false, true} {
-		s := &Server{Development: development, Metrics: telemetry.New(), OperationsKey: "ops-test-key-at-least-16", Ready: func(context.Context) error { return nil }}
+		s := &Server{Development: development, Metrics: newTestMetrics(t), Ready: func(context.Context) error { return nil }}
 		handler := s.Handler()
 		for _, tc := range []struct {
-			path, remote, token string
-			status              int
+			path, remote string
+			status       int
 		}{
-			{"/metrics", "127.0.0.1:1234", "", 401}, {"/metrics", "127.0.0.1:1234", "workspace-key", 401}, {"/metrics", "127.0.0.1:1234", s.OperationsKey, 200},
-			{"/swagger/doc.json", "192.0.2.1:1234", "", 404}, {"/readyz", "127.0.0.1:1234", "", 200},
+			{"/swagger/doc.json", "192.0.2.1:1234", 404}, {"/readyz", "127.0.0.1:1234", 200},
 		} {
 			req := httptest.NewRequest("GET", tc.path, nil)
 			req.RemoteAddr = tc.remote
-			req.Header.Set("Authorization", "Bearer "+tc.token)
 			rec := httptest.NewRecorder()
 			handler.ServeHTTP(rec, req)
 			if rec.Code != tc.status {
@@ -99,7 +101,7 @@ func TestOperationsAccessAndReadiness(t *testing.T) {
 	rec := httptest.NewRecorder()
 	s.Handler().ServeHTTP(rec, httptest.NewRequest("GET", "/metrics", nil))
 	if rec.Code != 404 {
-		t.Fatal("metrics enabled without an operations key")
+		t.Fatal("unexpected metrics scrape endpoint")
 	}
 }
 
@@ -204,7 +206,7 @@ func TestSSEShutdownThroughAPI(t *testing.T) {
 	task := f.submit(t, "shutdown")
 	shutdown, stop := context.WithCancel(t.Context())
 	defer stop()
-	s := &Server{DB: f.db, Keys: map[string]string{f.token: f.workspace}, Shutdown: shutdown, Metrics: telemetry.New()}
+	s := &Server{DB: f.db, Keys: map[string]string{f.token: f.workspace}, Shutdown: shutdown, Metrics: newTestMetrics(t)}
 	server := httptest.NewServer(s.Handler())
 	defer server.Close()
 	req, _ := http.NewRequestWithContext(t.Context(), "GET", server.URL+"/v1/tasks/"+task.ID+"/events", nil)
@@ -232,7 +234,7 @@ func TestRequestLoggingDoesNotExposePayloadOrCredentials(t *testing.T) {
 	previous := slog.Default()
 	slog.SetDefault(slog.New(slog.NewJSONHandler(&output, nil)))
 	defer slog.SetDefault(previous)
-	server := &Server{Metrics: telemetry.New()}
+	server := &Server{Metrics: newTestMetrics(t)}
 	e := echo.New()
 	e.HTTPErrorHandler = server.handleError
 	e.Use(server.observe)
@@ -287,4 +289,87 @@ func TestReadinessUsesOneBudgetAndRejectsShutdown(t *testing.T) {
 	if rec.Code != 503 {
 		t.Fatal("shutdown reported ready")
 	}
+}
+
+func newTestMetrics(t *testing.T) *telemetry.Metrics {
+	t.Helper()
+	metrics, err := telemetry.New(noop.NewMeterProvider().Meter("api-test"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return metrics
+}
+
+func TestHTTPMetricIncludesEntireStreamLifetime(t *testing.T) {
+	reader := sdkmetric.NewManualReader()
+	provider := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
+	defer provider.Shutdown(context.Background())
+	m, err := telemetry.New(provider.Meter("http-test"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := &Server{Metrics: m}
+	release := make(chan struct{})
+	started := make(chan time.Time, 1)
+	e := echo.New()
+	e.Use(server.observe)
+	e.GET("/stream/:id", func(c *echo.Context) error {
+		started <- time.Now()
+		c.Response().Header().Set("Content-Type", "text/event-stream")
+		c.Response().WriteHeader(200)
+		if err := http.NewResponseController(c.Response()).Flush(); err != nil {
+			return err
+		}
+		<-release
+		return nil
+	})
+	httpServer := httptest.NewServer(e)
+	defer httpServer.Close()
+	closeStream := sync.OnceFunc(func() { close(release) })
+	defer closeStream()
+	response, err := httpServer.Client().Get(httpServer.URL + "/stream/private-id")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	var before metricdata.ResourceMetrics
+	if err := reader.Collect(t.Context(), &before); err != nil {
+		t.Fatal(err)
+	}
+	for _, scope := range before.ScopeMetrics {
+		for _, m := range scope.Metrics {
+			if m.Name == "makez_http_request_seconds" {
+				t.Fatal("HTTP metric recorded before stream ended")
+			}
+		}
+	}
+	elapsed := time.Since(<-started)
+	closeStream()
+	if _, err := io.ReadAll(response.Body); err != nil {
+		t.Fatal(err)
+	}
+	var after metricdata.ResourceMetrics
+	if err := reader.Collect(t.Context(), &after); err != nil {
+		t.Fatal(err)
+	}
+	for _, scope := range after.ScopeMetrics {
+		for _, m := range scope.Metrics {
+			if m.Name != "makez_http_request_seconds" {
+				continue
+			}
+			h := m.Data.(metricdata.Histogram[float64])
+			if len(h.DataPoints) != 1 || h.DataPoints[0].Count != 1 || h.DataPoints[0].Sum < elapsed.Seconds() {
+				t.Fatal("stream lifetime was not included", h)
+			}
+			attrs := h.DataPoints[0].Attributes
+			route, _ := attrs.Value("route")
+			method, _ := attrs.Value("method")
+			status, _ := attrs.Value("status")
+			if attrs.Len() != 3 || route.AsString() != "/stream/:id" || method.AsString() != "GET" || status.AsString() != "200" {
+				t.Fatal("incorrect HTTP attributes", attrs)
+			}
+			return
+		}
+	}
+	t.Fatal("missing HTTP metric after stream closure")
 }

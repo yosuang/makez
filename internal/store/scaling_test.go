@@ -1,12 +1,15 @@
 package store
 
 import (
+	"context"
 	"fmt"
 	"testing"
 	"time"
 
 	"github.com/makez-dev/makez/internal/core"
 	"github.com/makez-dev/makez/internal/telemetry"
+	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
+	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 )
 
 func TestRecoveryCursorVisitsBeyond500WithEqualTimestamps(t *testing.T) {
@@ -45,7 +48,7 @@ func TestRecoveryCursorVisitsBeyond500WithEqualTimestamps(t *testing.T) {
 
 func TestCommittedTaskMetricsDoNotCountReplays(t *testing.T) {
 	s, workspace := testStore(t)
-	s.Metrics = telemetry.New()
+	reader := attachTestMetrics(t, s)
 	task := prepareRun(t, s, workspace)
 	if _, err := s.InitializeRun(t.Context(), workspace, task.ID, "test-backend"); err != nil {
 		t.Fatal(err)
@@ -60,27 +63,23 @@ func TestCommittedTaskMetricsDoNotCountReplays(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	families, err := s.Metrics.Registry.Gather()
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, f := range families {
-		switch f.GetName() {
-		case "makez_task_queue_seconds", "makez_task_execution_seconds":
-			if f.Metric[0].Histogram.GetSampleCount() != 1 {
-				t.Fatalf("%s counted a replay", f.GetName())
-			}
-		case "makez_task_results_total":
-			if f.Metric[0].Counter.GetValue() != 1 {
-				t.Fatal("result counted a replay")
-			}
+	metrics := collectStoreMetrics(t, reader)
+	for _, name := range []string{"makez_task_queue_seconds", "makez_task_execution_seconds"} {
+		histogram, ok := metrics[name].Data.(metricdata.Histogram[float64])
+		if !ok || len(histogram.DataPoints) != 1 || histogram.DataPoints[0].Count != 1 {
+			t.Fatalf("%s missing or counted a replay: %+v", name, histogram)
 		}
 	}
+	results, ok := metrics["makez_task_results_total"].Data.(metricdata.Sum[int64])
+	if !ok || len(results.DataPoints) != 1 || results.DataPoints[0].Value != 1 {
+		t.Fatalf("result missing or counted a replay: %+v", results)
+	}
+
 }
 
 func TestOutboxAgeSurvivesRetryAndPoolIsBounded(t *testing.T) {
 	s, workspace := testStore(t)
-	s.Metrics = telemetry.New()
+	reader := attachTestMetrics(t, s)
 	task := prepareRun(t, s, workspace)
 	_, err := s.pool.Exec(t.Context(), `UPDATE makez_outbox SET created_at=now()-interval '1 hour' WHERE task_id=$1`, task.ID)
 	if err != nil {
@@ -93,18 +92,12 @@ func TestOutboxAgeSurvivesRetryAndPoolIsBounded(t *testing.T) {
 	if err := s.RetryOutbox(t.Context(), pending[0].ID, "test"); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.RefreshMetrics(t.Context()); err != nil {
-		t.Fatal(err)
+	metrics := collectStoreMetrics(t, reader)
+	age, ok := metrics["makez_outbox_oldest_seconds"].Data.(metricdata.Gauge[float64])
+	if !ok || len(age.DataPoints) != 1 || age.DataPoints[0].Value < 3590 {
+		t.Fatalf("missing age or retry reset it: %+v", age)
 	}
-	families, err := s.Metrics.Registry.Gather()
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, f := range families {
-		if f.GetName() == "makez_outbox_oldest_seconds" && f.Metric[0].Gauge.GetValue() < 3590 {
-			t.Fatal("retry reset age")
-		}
-	}
+
 	if got := s.pool.Config().MaxConns; got != 16 {
 		t.Fatalf("default pool budget=%d", got)
 	}
@@ -180,4 +173,35 @@ func TestRecoverySweepExcludesNewArrivalsUntilRestart(t *testing.T) {
 	if next[0].ID != task.ID || next[1].ID != "later-arrival" {
 		t.Fatal("sweep order changed")
 	}
+}
+
+func attachTestMetrics(t *testing.T, s *Store) *sdkmetric.ManualReader {
+	t.Helper()
+	reader := sdkmetric.NewManualReader()
+	provider := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
+	t.Cleanup(func() { _ = provider.Shutdown(context.Background()) })
+	var err error
+	s.Metrics, err = telemetry.New(provider.Meter("store-test"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Metrics.RegisterBacklog(s.ReadBacklog); err != nil {
+		t.Fatal(err)
+	}
+	return reader
+}
+
+func collectStoreMetrics(t *testing.T, reader *sdkmetric.ManualReader) map[string]metricdata.Metrics {
+	t.Helper()
+	var data metricdata.ResourceMetrics
+	if err := reader.Collect(t.Context(), &data); err != nil {
+		t.Fatal(err)
+	}
+	result := map[string]metricdata.Metrics{}
+	for _, scope := range data.ScopeMetrics {
+		for _, m := range scope.Metrics {
+			result[m.Name] = m
+		}
+	}
+	return result
 }

@@ -83,9 +83,28 @@ func run() error {
 		return err
 	}
 	defer db.Close()
-	metrics := telemetry.New()
-	db.Metrics = metrics
 	if err = db.Migrate(ctx); err != nil {
+		return err
+	}
+	provider, shutdownMetrics, err := configureMetrics(ctx)
+	if err != nil {
+		return err
+	}
+	// Registered before worker/dispatcher cleanup, but after database cleanup:
+	// stop producers first, then flush metrics while the database is still open.
+	defer func() {
+		flushCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := shutdownMetrics(flushCtx); err != nil {
+			slog.Warn("metrics shutdown failed", "error", err)
+		}
+	}()
+	metrics, err := telemetry.New(provider.Meter("github.com/makez-dev/makez"))
+	if err != nil {
+		return err
+	}
+	db.Metrics = metrics
+	if err := metrics.RegisterBacklog(db.ReadBacklog); err != nil {
 		return err
 	}
 	files, err := artifact.New(env("MAKEZ_ARTIFACT_DIR", ".local/artifacts"))
@@ -129,7 +148,7 @@ func run() error {
 		go func() { defer close(dispatchDone); orchestration.Dispatch(dispatchCtx, db, tc) }()
 		defer func() { stopDispatch(); <-dispatchDone }()
 	}
-	handler := (&api.Server{DB: db, Artifacts: files, Keys: keys, Agents: agents, Secrets: secrets, Metrics: metrics, OperationsKey: config.OperationsKey, Development: config.Development, OperationsOnly: mode == "worker", Shutdown: ctx, Ready: func(check context.Context) error {
+	handler := (&api.Server{DB: db, Artifacts: files, Keys: keys, Agents: agents, Secrets: secrets, Metrics: metrics, Development: config.Development, OperationsOnly: mode == "worker", Shutdown: ctx, Ready: func(check context.Context) error {
 		if err := db.Ping(check); err != nil {
 			return err
 		}
@@ -137,6 +156,7 @@ func run() error {
 		return err
 	}}).Handler()
 	srv := &http.Server{Addr: listener.Addr().String(), Handler: handler, ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 15 * time.Second, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 32 << 10}
+	defer srv.Close()
 	done := make(chan error, 1)
 	go func() {
 		slog.Info("makez HTTP listening", "address", srv.Addr, "mode", mode)

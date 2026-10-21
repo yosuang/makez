@@ -204,7 +204,7 @@ func (s *Store) Publish(ctx context.Context, workspace, id string, state core.Ta
 	if t.Run != nil && t.Run.StartedAt != nil {
 		started = *t.Run.StartedAt
 	}
-	s.Metrics.Result(string(state), started)
+	s.Metrics.Result(ctx, string(state), started)
 	return nil
 }
 func (s *Store) SetCleanup(ctx context.Context, id string, state core.CleanupState) error {

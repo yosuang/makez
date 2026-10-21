@@ -28,7 +28,6 @@ type Server struct {
 	Agents         map[string]core.AgentAdapter
 	Secrets        core.SecretResolver
 	Metrics        *telemetry.Metrics
-	OperationsKey  string
 	Development    bool
 	OperationsOnly bool
 	Ready          func(context.Context) error
@@ -44,7 +43,6 @@ func (s *Server) Handler() http.Handler {
 	e.Use(s.observe, s.authorize)
 	e.GET("/healthz", func(c *echo.Context) error { return c.String(200, "ok") })
 	e.GET("/readyz", s.ready)
-	e.GET("/metrics", s.metrics)
 	s.registerDocs(e)
 	if !s.OperationsOnly {
 		e.GET("/v1/agents", s.agents)

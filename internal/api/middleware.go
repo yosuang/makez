@@ -14,6 +14,8 @@ import (
 
 	"github.com/labstack/echo/v5"
 	"github.com/makez-dev/makez/internal/store"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/metric"
 )
 
 func (s *Server) authorize(next echo.HandlerFunc) echo.HandlerFunc {
@@ -83,7 +85,7 @@ func (s *Server) observe(next echo.HandlerFunc) echo.HandlerFunc {
 				method = "OTHER"
 			}
 			if s.Metrics != nil {
-				s.Metrics.HTTP.WithLabelValues(method, route, strconv.Itoa(status)).Observe(time.Since(start).Seconds())
+				s.Metrics.HTTP.Record(c.Request().Context(), time.Since(start).Seconds(), metric.WithAttributes(attribute.String("method", method), attribute.String("route", route), attribute.String("status", strconv.Itoa(status))))
 			}
 			slog.InfoContext(c.Request().Context(), "HTTP request", "request_id", h.Get("X-Request-ID"), "method", method, "route", route, "status", status, "duration", time.Since(start))
 		}()
