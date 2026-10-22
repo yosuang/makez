@@ -12,8 +12,10 @@ type = "docker"
 execd_image = "opensandbox/execd:v1.1.0"
 
 [store]
-type = "sqlite"
-path = "/data/opensandbox.db"
+# release-1.1.1 reads OPENSANDBOX_STORE_POSTGRESQL_DSN from the environment.
+# This persists server metadata, not sandbox filesystems. Old SQLite files in
+# .local are retained, but switching stores does not migrate their metadata.
+type = "postgresql"
 
 [docker]
 network_mode = "makez-sandboxes"

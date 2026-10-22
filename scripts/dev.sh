@@ -10,15 +10,15 @@ for dependency in go docker jq openssl pnpm; do
 done
 pnpm --dir apps/web install --frozen-lockfile
 docker compose version >/dev/null
-compose=(docker compose -f dev/docker-compose.yaml)
+compose=(docker compose -f deploy/docker-compose.infra.yaml)
 
-if [[ -e .local/temporal.db || -e .local/opensandbox.db ]]; then
-  echo "Legacy SQLite data is still at .local/temporal.db or .local/opensandbox.db. Stop old processes, then move .local/temporal.db* into .local/temporal/ and .local/opensandbox.db* into .local/opensandbox/, including WAL/SHM files, without overwriting files already there." >&2
-  exit 1
+if [[ -e .local/temporal.db || -e .local/opensandbox.db ||
+      -e .local/temporal/temporal.db || -e .local/opensandbox/opensandbox.db ]]; then
+  echo "Temporal and OpenSandbox now use PostgreSQL. Existing SQLite files are retained in .local; their history is not automatically migrated. Stop any old standalone services before continuing." >&2
 fi
 
 umask 077
-mkdir -p .local/temporal .local/opensandbox
+mkdir -p .local
 if [[ ! -f .local/env ]]; then
   workspace_key=$(openssl rand -hex 24)
   sandbox_key=$(openssl rand -hex 24)
@@ -29,6 +29,8 @@ if [[ ! -f .local/env ]]; then
     printf 'export MAKEZ_CONTROL_KEY=%q\n' "$control_key"
   } > .local/env
 fi
+# This is a shell export file, not a Compose env_file.
+# shellcheck disable=SC1091
 source .local/env
 
 if [[ -n "${MAKEZ_CODEX_AGENT:-}" ]]; then
@@ -38,7 +40,8 @@ else
 fi
 
 docker volume create makez-postgres >/dev/null
-"${compose[@]}" up -d --wait --wait-timeout 90
+# The one-shot database, schema and namespace jobs also run on existing volumes.
+"${compose[@]}" up -d --wait --wait-timeout 180
 docker build --target sandbox -t makez-runtime:0.1 .
 if [[ "$MAKEZ_RUNTIME_IMAGE" == makez-runtime-codex:0.1 ]]; then
   docker build --target codex -t makez-runtime-codex:0.1 .
@@ -48,7 +51,7 @@ go run ./build bin/makez
 
 printf '\nGo API: http://%s\nAPI Key: %s\n' "${MAKEZ_LISTEN:-127.0.0.1:8088}" "$(jq -er 'keys[0]' <<< "$MAKEZ_API_KEYS")"
 printf 'Web: http://127.0.0.1:3000\n'
-printf 'Temporal: http://127.0.0.1:18233\nCtrl+C stops makez and Web. Infrastructure stays running; use docker compose -f dev/docker-compose.yaml down to stop it.\n\n'
+printf 'Temporal: http://127.0.0.1:18233\nCtrl+C stops makez and Web. Infrastructure stays running; use docker compose -f deploy/docker-compose.infra.yaml down to stop it (source .local/env first).\n\n'
 
 # Separate process groups let cleanup also stop pnpm's child processes.
 set -m
