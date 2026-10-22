@@ -1,8 +1,8 @@
 #!/bin/sh
 set -eu
 
-# setup-schema creates version tables if absent and preserves newer versions.
-# update-schema applies only pending migrations; never use setup's --overwrite.
+# Official schema bootstrap for the pinned server image; safe to rerun with
+# the same version. Database creation belongs to PostgreSQL's first-run SQL.
 # https://github.com/temporalio/samples-server/blob/main/compose/scripts/setup-postgres.sh
 for database in temporal temporal_visibility; do
   schema=temporal

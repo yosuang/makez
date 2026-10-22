@@ -1,20 +1,17 @@
 name: makez
 
 # Development dependencies only; Makez and Web run on the host via make dev.
-# Database passwords below are local development fixtures, never production
-# credentials. Keep the original Makez bootstrap role/password and PG 17 volume
-# for compatibility; it remains a superuser on existing installations.
+# All database passwords are development-only fixtures.
 services:
   postgres:
     image: postgres:17.11
     environment:
-      POSTGRES_USER: makez
-      POSTGRES_PASSWORD: makez-local
-      POSTGRES_DB: makez
+      POSTGRES_PASSWORD: postgres-local
     ports:
       - "127.0.0.1:55432:5432"
     volumes:
-      - postgres:/var/lib/postgresql/data
+      - postgres-data:/var/lib/postgresql/data
+      - ./postgres-init.sql:/docker-entrypoint-initdb.d/makez.sql:ro
     healthcheck:
       # TCP becomes ready only after the image's first-run initialization ends.
       test: ["CMD", "pg_isready", "-h", "127.0.0.1", "-U", "makez", "-d", "makez"]
@@ -22,28 +19,13 @@ services:
       timeout: 3s
       retries: 30
 
-  postgres-init:
-    image: postgres:17.11
-    depends_on:
-      postgres:
-        condition: service_healthy
-    environment:
-      PGHOST: postgres
-      PGUSER: makez
-      PGPASSWORD: makez-local
-      PGDATABASE: postgres
-    volumes:
-      - ./postgres-init.sql:/init/postgres.sql:ro
-    entrypoint: ["psql", "-X", "--set", "ON_ERROR_STOP=1", "--file", "/init/postgres.sql"]
-    restart: "no"
-
   # Follow temporalio/samples-server's PostgreSQL setup with matching server and
   # admin-tools releases. postgres12 is the plugin name, not the server version.
   temporal-schema:
     image: temporalio/admin-tools:1.31.0
     depends_on:
-      postgres-init:
-        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
     environment:
       SQL_PASSWORD: temporal-local
     volumes:
@@ -110,8 +92,8 @@ services:
   opensandbox:
     image: opensandbox/server:release-1.1.1
     depends_on:
-      postgres-init:
-        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
     environment:
       OPENSANDBOX_SERVER_API_KEY: ${MAKEZ_SANDBOX_API_KEY:?Run make dev once, then source .local/env}
       OPENSANDBOX_STORE_POSTGRESQL_DSN: postgresql://opensandbox:opensandbox-local@postgres:5432/opensandbox?sslmode=disable
@@ -138,9 +120,10 @@ configs:
     file: ./opensandbox.toml
 
 volumes:
-  postgres:
-    name: makez-postgres
-    external: true
+  # A fresh Compose volume, separate from the former external makez-postgres.
+  # SQL initialization runs only on an empty volume. Old/incompatible dev data
+  # requires an explicit user-managed decision; nothing is migrated or reset.
+  postgres-data:
 
 networks:
   sandboxes:
