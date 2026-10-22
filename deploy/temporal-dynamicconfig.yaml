@@ -1,0 +1,4 @@
+# PostgreSQL visibility identifiers are limited to 255 characters.
+limit.maxIDLength:
+  - value: 255
+    constraints: {}

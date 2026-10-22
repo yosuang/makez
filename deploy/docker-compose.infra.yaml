@@ -1,0 +1,130 @@
+name: makez
+
+# Development dependencies only; Makez and Web run on the host via make dev.
+# All database passwords are development-only fixtures.
+services:
+  postgres:
+    image: postgres:17.11
+    environment:
+      POSTGRES_PASSWORD: postgres-local
+    ports:
+      - "127.0.0.1:55432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./postgres-init.sql:/docker-entrypoint-initdb.d/makez.sql:ro
+    healthcheck:
+      # TCP becomes ready only after the image's first-run initialization ends.
+      test: ["CMD", "pg_isready", "-h", "127.0.0.1", "-U", "makez", "-d", "makez"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  # Follow temporalio/samples-server's PostgreSQL setup with matching server and
+  # admin-tools releases. postgres12 is the plugin name, not the server version.
+  temporal-schema:
+    image: temporalio/admin-tools:1.31.0
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      SQL_PASSWORD: temporal-local
+    volumes:
+      - ./temporal-schema.sh:/init/temporal-schema.sh:ro
+    entrypoint: ["/bin/sh", "/init/temporal-schema.sh"]
+    restart: "no"
+
+  temporal:
+    image: temporalio/server:1.31.0
+    depends_on:
+      temporal-schema:
+        condition: service_completed_successfully
+    environment:
+      DB: postgres12
+      DB_PORT: "5432"
+      POSTGRES_USER: temporal
+      POSTGRES_PWD: temporal-local
+      POSTGRES_SEEDS: postgres
+      DBNAME: temporal
+      VISIBILITY_DBNAME: temporal_visibility
+      BIND_ON_IP: 0.0.0.0
+      DYNAMIC_CONFIG_FILE_PATH: /etc/temporal/config/development-sql.yaml
+    volumes:
+      - ./temporal-dynamicconfig.yaml:/etc/temporal/config/development-sql.yaml:ro
+    ports:
+      - "127.0.0.1:17233:7233"
+    healthcheck:
+      # The server image has no CLI. The namespace job checks cluster health.
+      test: ["CMD", "nc", "-z", "127.0.0.1", "7233"]
+      interval: 2s
+      timeout: 5s
+      retries: 60
+      start_period: 10s
+    stop_grace_period: 30s
+
+  temporal-namespace:
+    image: temporalio/admin-tools:1.31.0
+    depends_on:
+      temporal:
+        condition: service_healthy
+    environment:
+      TEMPORAL_ADDRESS: temporal:7233
+      TEMPORAL_NAMESPACE: ${MAKEZ_TEMPORAL_NAMESPACE:-default}
+    volumes:
+      - ./temporal-namespace.sh:/init/temporal-namespace.sh:ro
+    entrypoint: ["/bin/sh", "/init/temporal-namespace.sh"]
+    restart: "no"
+
+  temporal-ui:
+    image: temporalio/ui:2.49.1
+    depends_on:
+      temporal-namespace:
+        condition: service_completed_successfully
+    environment:
+      TEMPORAL_ADDRESS: temporal:7233
+    ports:
+      - "127.0.0.1:18233:8080"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:8080/"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  opensandbox:
+    image: opensandbox/server:release-1.1.1
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      OPENSANDBOX_SERVER_API_KEY: ${MAKEZ_SANDBOX_API_KEY:?Run make dev once, then source .local/env}
+      OPENSANDBOX_STORE_POSTGRESQL_DSN: postgresql://opensandbox:opensandbox-local@postgres:5432/opensandbox?sslmode=disable
+    ports:
+      - "127.0.0.1:18080:8080"
+    configs:
+      - source: opensandbox
+        target: /etc/opensandbox/config.toml
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    networks:
+      - default
+      - sandboxes
+    healthcheck:
+      # The upstream image includes Python, but no curl or wget.
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health', timeout=2).read()"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    stop_grace_period: 30s
+
+configs:
+  opensandbox:
+    file: ./opensandbox.toml
+
+volumes:
+  # A fresh Compose volume, separate from the former external makez-postgres.
+  # SQL initialization runs only on an empty volume. Old/incompatible dev data
+  # requires an explicit user-managed decision; nothing is migrated or reset.
+  postgres-data:
+
+networks:
+  sandboxes:
+    name: makez-sandboxes
