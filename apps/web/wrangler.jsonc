@@ -1,0 +1,7 @@
+{
+  // Static Cloudflare Pages project. No Worker entry and no API proxy.
+  // Pages serves index.html for unknown paths when the output has no top-level 404.html.
+  "name": "makez-web",
+  "pages_build_output_dir": "./dist",
+  "compatibility_date": "2026-10-23",
+}
