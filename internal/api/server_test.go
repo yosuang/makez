@@ -55,13 +55,17 @@ func apiTestServer(t *testing.T) *apiFixture {
 	}
 	var nonce [12]byte
 	if _, err = rand.Read(nonce[:]); err != nil {
-		admin.Close(ctx)
+		if err := admin.Close(ctx); err != nil {
+			t.Error(err)
+		}
 		t.Fatal(err)
 	}
 	schema := "makez_api_test_" + hex.EncodeToString(nonce[:])
 	quotedSchema := pgx.Identifier{schema}.Sanitize()
 	if _, err = admin.Exec(ctx, "CREATE SCHEMA "+quotedSchema); err != nil {
-		admin.Close(ctx)
+		if err := admin.Close(ctx); err != nil {
+			t.Error(err)
+		}
 		t.Fatal(err)
 	}
 	// Isolate Outbox rows from a concurrently running development dispatcher.
@@ -69,7 +73,9 @@ func apiTestServer(t *testing.T) *apiFixture {
 		if _, err := admin.Exec(ctx, "DROP SCHEMA "+quotedSchema+" CASCADE"); err != nil {
 			t.Errorf("remove isolated test schema: %v", err)
 		}
-		admin.Close(ctx)
+		if err := admin.Close(ctx); err != nil {
+			t.Error(err)
+		}
 	})
 	u, err := url.Parse(databaseURL)
 	if err != nil {
@@ -90,7 +96,11 @@ func apiTestServer(t *testing.T) *apiFixture {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { files.Close() })
+	t.Cleanup(func() {
+		if err := files.Close(); err != nil {
+			t.Error(err)
+		}
+	})
 	workspace := "api-test-" + hex.EncodeToString(nonce[:])
 	s := &Server{DB: db, Artifacts: files, Keys: map[string]string{"token-a": workspace, "token-b": workspace + "-other"}, Agents: map[string]core.AgentAdapter{"demo@1": agent.NewDemo()}}
 	return &apiFixture{db: db, files: files, handler: s.Handler(), workspace: workspace, token: "token-a"}
@@ -121,6 +131,7 @@ func taskResponse(t *testing.T, r *httptest.ResponseRecorder, want int) store.Ta
 	return task
 }
 func (f *apiFixture) submit(t *testing.T, key string) store.Task {
+	t.Helper()
 	return taskResponse(t, f.request(t, "POST", "/v1/tasks", `{"prompt":"test HTTP task"}`, key, f.token), 202)
 }
 
@@ -156,7 +167,7 @@ func TestAPIAuthIsolationAndQueuedCancel(t *testing.T) {
 			t.Fatalf("bad token status=%d", got.Code)
 		}
 	}
-	r := httptest.NewRequest("GET", "/v1/tasks", nil)
+	r := httptest.NewRequest(http.MethodGet, "/v1/tasks", nil)
 	r.Header.Set("Authorization", f.token)
 	response := httptest.NewRecorder()
 	f.handler.ServeHTTP(response, r)
@@ -277,7 +288,7 @@ func TestAPIArtifactAndEventReplay(t *testing.T) {
 	if err != nil || len(saved) != 1 {
 		t.Fatalf("event lookup %v", err)
 	}
-	req := httptest.NewRequest("GET", "/v1/tasks/"+task.ID+"/events", nil)
+	req := httptest.NewRequest(http.MethodGet, "/v1/tasks/"+task.ID+"/events", nil)
 	req.Header.Set("Authorization", "Bearer "+f.token)
 	req.Header.Set("Last-Event-ID", fmt.Sprint(saved[0].Seq))
 	replay := httptest.NewRecorder()

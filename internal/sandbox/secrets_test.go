@@ -68,7 +68,7 @@ func TestStartUsesExplicitSecretWirePayload(t *testing.T) {
 	var posted bool
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
-		case r.Method == "POST" && r.URL.Path == "/start":
+		case r.Method == http.MethodPost && r.URL.Path == "/start":
 			posted = true
 			var wire struct{ SecretRefs, SecretValues map[string]string }
 			if err := json.NewDecoder(r.Body).Decode(&wire); err != nil {
@@ -77,11 +77,17 @@ func TestStartUsesExplicitSecretWirePayload(t *testing.T) {
 			if wire.SecretValues["TOKEN"] != "test-secret-value" || wire.SecretRefs["TOKEN"] != "secret://workspace/token/v1" {
 				t.Error("incomplete ephemeral injection")
 			}
-			json.NewEncoder(w).Encode(map[string]any{"data": core.ProcessObservation{State: core.ProcessRunning, Ref: &core.ProcessRef{ID: "receipt", Key: key}}})
+			if err := json.NewEncoder(w).Encode(map[string]any{"data": core.ProcessObservation{State: core.ProcessRunning, Ref: &core.ProcessRef{ID: "receipt", Key: key}}}); err != nil {
+				t.Error(err)
+			}
 		case strings.HasSuffix(r.URL.Path, "/endpoints/8099"):
-			json.NewEncoder(w).Encode(map[string]string{"endpoint": strings.TrimSuffix(p.cfg.BaseURL, "/v1")})
+			if err := json.NewEncoder(w).Encode(map[string]string{"endpoint": strings.TrimSuffix(p.cfg.BaseURL, "/v1")}); err != nil {
+				t.Error(err)
+			}
 		default:
-			json.NewEncoder(w).Encode(resource{ID: "sandbox", Metadata: p.labels(key)})
+			if err := json.NewEncoder(w).Encode(resource{ID: "sandbox", Metadata: p.labels(key)}); err != nil {
+				t.Error(err)
+			}
 		}
 	}))
 	t.Cleanup(server.Close)
@@ -109,10 +115,14 @@ func TestStartRejectsPlaintextRuntimeEndpoint(t *testing.T) {
 	var p *Provider
 	p = testProvider(t, func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasSuffix(r.URL.Path, "/endpoints/8099") {
-			json.NewEncoder(w).Encode(map[string]string{"endpoint": "http://remote.example:8099"})
+			if err := json.NewEncoder(w).Encode(map[string]string{"endpoint": "http://remote.example:8099"}); err != nil {
+				t.Error(err)
+			}
 			return
 		}
-		json.NewEncoder(w).Encode(resource{ID: "sandbox", Metadata: p.labels(key)})
+		if err := json.NewEncoder(w).Encode(resource{ID: "sandbox", Metadata: p.labels(key)}); err != nil {
+			t.Error(err)
+		}
 	})
 	request := core.StartRequest{Key: key, SecretRefs: map[string]string{"TOKEN": "ref"}, SecretValues: map[string]string{"TOKEN": "test-secret-value"}}
 	_, err := p.Start(t.Context(), core.SandboxRef{BackendID: "opensandbox", ID: "sandbox", Key: key}, request)

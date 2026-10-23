@@ -8,9 +8,12 @@ import (
 	"github.com/makez-dev/makez/internal/store"
 )
 
+// ErrorResponse contains the public API error message.
 type ErrorResponse struct {
 	Error string `json:"error"`
 }
+
+// SubmitRequest contains the accepted task submission fields.
 type SubmitRequest struct {
 	// Prompt is required and must contain 1–65536 UTF-8 bytes after checking for blank input.
 	Prompt         string          `json:"prompt" validate:"required"`
@@ -24,6 +27,7 @@ type SubmitRequest struct {
 	TimeoutSeconds int       `json:"timeout_seconds,omitempty" minimum:"5" maximum:"5400" default:"3600"`
 }
 
+// TaskResponse contains the public task state and its current run.
 type TaskResponse struct {
 	ID              string          `json:"id"`
 	WorkspaceID     string          `json:"workspace_id"`
@@ -42,6 +46,7 @@ type TaskResponse struct {
 	DispatchError   string          `json:"dispatch_error,omitempty"`
 }
 
+// RunResponse exposes execution state without private parser or plan data.
 type RunResponse struct {
 	ID              string            `json:"id"`
 	TaskID          string            `json:"task_id"`
@@ -56,6 +61,7 @@ type RunResponse struct {
 	VerifiedStopped bool              `json:"verified_stopped"`
 }
 
+// ArtifactResponse exposes artifact metadata without its storage key.
 type ArtifactResponse struct {
 	ID        string `json:"id"`
 	RunID     string `json:"run_id"`
@@ -65,6 +71,7 @@ type ArtifactResponse struct {
 	Size      int64  `json:"size"`
 }
 
+// EventResponse contains a replayable task event.
 type EventResponse struct {
 	Seq       int64           `json:"seq"`
 	RunID     string          `json:"run_id"`

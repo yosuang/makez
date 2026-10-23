@@ -42,7 +42,7 @@ func requestID(value string) string {
 	if len(value) > 0 && len(value) <= 64 {
 		valid := true
 		for _, r := range value {
-			if !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '-' || r == '_') {
+			if (r < 'a' || r > 'z') && (r < 'A' || r > 'Z') && (r < '0' || r > '9') && r != '-' && r != '_' {
 				valid = false
 				break
 			}
@@ -118,11 +118,11 @@ func (s *Server) handleError(c *echo.Context, err error) {
 		return
 	}
 	if errors.Is(err, echo.ErrNotFound) {
-		http.Error(c.Response(), "404 page not found", 404)
+		http.Error(c.Response(), "404 page not found", http.StatusNotFound)
 		return
 	}
 	if errors.Is(err, echo.ErrMethodNotAllowed) {
-		http.Error(c.Response(), "Method Not Allowed", 405)
+		http.Error(c.Response(), "Method Not Allowed", http.StatusMethodNotAllowed)
 		return
 	}
 	if err := c.JSON(status, ErrorResponse{Error: msg}); err != nil {

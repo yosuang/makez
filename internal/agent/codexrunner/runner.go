@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -26,6 +27,7 @@ If the task cannot be completed, report succeeded=false and an actionable summar
 User task:
 `
 
+// Config specifies the Codex invocation, workspace, and credential mode.
 type Config struct {
 	AuthMode   string
 	Model      string
@@ -90,7 +92,11 @@ func Run(ctx context.Context, c Config, stdout, stderr io.Writer) int {
 	if err != nil {
 		return fail("CODEX_RUNTIME_ERROR", 74)
 	}
-	defer os.RemoveAll(home)
+	defer func() {
+		if err := os.RemoveAll(home); err != nil {
+			slog.Error("cannot remove temporary Codex home")
+		}
+	}()
 	env := []string{}
 	for _, entry := range os.Environ() {
 		name, _, _ := strings.Cut(entry, "=")
@@ -134,7 +140,7 @@ func Run(ctx context.Context, c Config, stdout, stderr io.Writer) int {
 	if err != nil {
 		return fail("CODEX_RUNTIME_ERROR", 74)
 	}
-	defer f.Close()
+	defer f.Close() //nolint:errcheck // The result file is read-only; read errors are handled below.
 	info, err := f.Stat()
 	if err != nil || !info.Mode().IsRegular() || info.Size() > 64<<10 {
 		return fail("INVALID_RESULT", 74)

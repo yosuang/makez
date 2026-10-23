@@ -32,7 +32,11 @@ func TestArchiveIsDurableAndRetrySafe(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer store.Close()
+	defer func() {
+		if err := store.Close(); err != nil {
+			t.Error(err)
+		}
+	}()
 	input := memoryWorkspace{"/workspace/report.md": "hello 世界\n"}
 	candidates := []core.ArtifactCandidate{{Path: "report.md", MediaType: "text/markdown", Required: true}, {Path: "optional.txt"}}
 	first, err := store.Archive(context.Background(), "run-1", input, candidates)
@@ -53,7 +57,9 @@ func TestArchiveIsDurableAndRetrySafe(t *testing.T) {
 		t.Fatal(err)
 	}
 	data, err := io.ReadAll(f)
-	f.Close()
+	if err := f.Close(); err != nil {
+		t.Error(err)
+	}
 	if err != nil || string(data) != "hello 世界\n" {
 		t.Fatalf("stored content missing: %v", err)
 	}
@@ -74,7 +80,11 @@ func TestRejectsUnsafePathsAndSymlinkEscape(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer store.Close()
+	defer func() {
+		if err := store.Close(); err != nil {
+			t.Error(err)
+		}
+	}()
 	outside := t.TempDir()
 	if err := os.Symlink(outside, filepath.Join(dir, "escape")); err != nil {
 		t.Fatal(err)
@@ -94,7 +104,11 @@ func TestArchiveFailureDoesNotPublishPartialFile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer store.Close()
+	defer func() {
+		if err := store.Close(); err != nil {
+			t.Error(err)
+		}
+	}()
 	_, err = store.Archive(context.Background(), "run-1", memoryWorkspace{}, []core.ArtifactCandidate{{Path: "missing", Required: true}})
 	if !errors.Is(err, fs.ErrNotExist) {
 		t.Fatalf("expected missing required artifact: %v", err)

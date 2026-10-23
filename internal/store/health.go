@@ -6,6 +6,7 @@ import (
 	"github.com/makez-dev/makez/internal/telemetry"
 )
 
+// Ping checks connectivity to the database.
 func (s *Store) Ping(ctx context.Context) error { return s.pool.Ping(ctx) }
 
 // ReadBacklog reads only indexed operational queues, not task/event history.

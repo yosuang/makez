@@ -34,7 +34,9 @@ func testStore(t *testing.T) (*Store, string) {
 	schema := "makez_store_test_" + newID()
 	quotedSchema := pgx.Identifier{schema}.Sanitize()
 	if _, err = admin.Exec(ctx, "CREATE SCHEMA "+quotedSchema); err != nil {
-		admin.Close(ctx)
+		if err := admin.Close(ctx); err != nil {
+			t.Error(err)
+		}
 		t.Fatal(err)
 	}
 	// Isolate Outbox rows from a concurrently running development dispatcher.
@@ -42,7 +44,9 @@ func testStore(t *testing.T) (*Store, string) {
 		if _, err := admin.Exec(ctx, "DROP SCHEMA "+quotedSchema+" CASCADE"); err != nil {
 			t.Errorf("remove isolated test schema: %v", err)
 		}
-		admin.Close(ctx)
+		if err := admin.Close(ctx); err != nil {
+			t.Error(err)
+		}
 	})
 	u, err := url.Parse(databaseURL)
 	if err != nil {

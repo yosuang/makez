@@ -36,7 +36,9 @@ func TestSSEFlushAndClientDisconnect(t *testing.T) {
 	if resp.Header.Get("Content-Type") != "text/event-stream" {
 		t.Fatal("wrong SSE content type")
 	}
-	resp.Body.Close()
+	if err := resp.Body.Close(); err != nil {
+		t.Error(err)
+	}
 	select {
 	case reason := <-done:
 		if reason != "canceled" {
@@ -86,7 +88,7 @@ func TestSSESlowClientAndBlockedWriteCancellation(t *testing.T) {
 			if cancelWrite {
 				timeout = time.Minute
 			}
-			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 				close(started)
 				reason, _ := streamEvents(ctx, w, 0, timeout, fetch, &Server{})
 				done <- reason
@@ -96,7 +98,11 @@ func TestSSESlowClientAndBlockedWriteCancellation(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			defer conn.Close()
+			defer func() {
+				if err := conn.Close(); err != nil {
+					t.Error(err)
+				}
+			}()
 			if tcp, ok := conn.(*net.TCPConn); ok {
 				_ = tcp.SetReadBuffer(1024)
 			}

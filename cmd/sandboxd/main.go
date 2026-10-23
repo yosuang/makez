@@ -1,3 +1,4 @@
+// Command sandboxd serves authenticated process and file control inside a sandbox.
 package main
 
 import (
@@ -16,7 +17,10 @@ func main() {
 		os.Exit(1)
 	}
 	token := os.Getenv("MAKEZ_CONTROL_TOKEN")
-	os.Unsetenv("MAKEZ_CONTROL_TOKEN")
+	if err := os.Unsetenv("MAKEZ_CONTROL_TOKEN"); err != nil {
+		slog.Error("cannot remove control token from environment")
+		os.Exit(1)
+	}
 	if len(token) < 32 {
 		slog.Error("a control token is required")
 		os.Exit(1)

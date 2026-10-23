@@ -9,8 +9,10 @@ import (
 	"time"
 )
 
+// TaskState tracks the user-visible lifecycle of a task.
 type TaskState string
 
+// Task lifecycle states.
 const (
 	TaskQueued    TaskState = "QUEUED"
 	TaskRunning   TaskState = "RUNNING"
@@ -20,8 +22,10 @@ const (
 	TaskCanceled  TaskState = "CANCELED"
 )
 
+// RunState tracks execution within a task run.
 type RunState string
 
+// Execution run lifecycle states.
 const (
 	RunPreparing  RunState = "PREPARING"
 	RunStarting   RunState = "STARTING"
@@ -33,8 +37,10 @@ const (
 	RunCanceled   RunState = "CANCELED"
 )
 
+// CleanupState tracks disposal of a run’s sandbox resources.
 type CleanupState string
 
+// Sandbox cleanup states.
 const (
 	CleanupNotRequired CleanupState = "NOT_REQUIRED"
 	CleanupPending     CleanupState = "PENDING"
@@ -42,8 +48,10 @@ const (
 	CleanupBlocked     CleanupState = "BLOCKED"
 )
 
+// FailureCode classifies provider failures for reconciliation and retry decisions.
 type FailureCode string
 
+// Provider failure classifications.
 const (
 	InvalidInput     FailureCode = "INVALID_INPUT"
 	Unsupported      FailureCode = "UNSUPPORTED_CAPABILITY"
@@ -55,6 +63,7 @@ const (
 	Conflict         FailureCode = "CONFLICT"
 )
 
+// ProviderError classifies a provider operation failure.
 // Retry policy is chosen by the caller; a transient transport error may still
 // have an unknown external outcome for a mutating operation.
 type ProviderError interface {
@@ -62,6 +71,7 @@ type ProviderError interface {
 	Code() FailureCode
 }
 
+// OperationKey identifies a stable, retryable operation within one run.
 type OperationKey struct {
 	WorkspaceID string
 	TaskID      string
@@ -69,8 +79,10 @@ type OperationKey struct {
 	Step        string // Stable logical step; never a Temporal Activity attempt.
 }
 
+// Capability identifies a feature offered by a sandbox backend.
 type Capability string
 
+// Capabilities advertised by sandbox backends.
 const (
 	BackgroundProcess Capability = "background_process"
 	OperationLookup   Capability = "operation_lookup"
@@ -82,18 +94,21 @@ const (
 	SecretInjection   Capability = "secret_injection"
 )
 
+// SandboxCapabilities describes supported operations and lifetime limits.
 type SandboxCapabilities struct {
 	Supported   []Capability
 	MaxLifetime time.Duration
 	Renewable   bool
 }
 
+// ResourceLimits bounds sandbox CPU, memory, and disk allocation.
 type ResourceLimits struct {
 	MilliCPU    int64
 	MemoryBytes int64
 	DiskBytes   int64
 }
 
+// SandboxRequest specifies the identity, runtime profile, and limits of a sandbox.
 type SandboxRequest struct {
 	Key                   OperationKey
 	RuntimeProfileID      string
@@ -103,14 +118,17 @@ type SandboxRequest struct {
 	NetworkPolicyRef      string
 }
 
+// SandboxRef identifies a backend resource and its owning operation.
 type SandboxRef struct {
 	BackendID string
 	ID        string
 	Key       OperationKey
 }
 
+// SandboxState describes the observed lifecycle of a sandbox resource.
 type SandboxState string
 
+// Observed sandbox states.
 const (
 	SandboxCreating SandboxState = "CREATING"
 	SandboxReady    SandboxState = "READY"
@@ -119,6 +137,7 @@ const (
 	SandboxUnknown  SandboxState = "UNKNOWN"
 )
 
+// SandboxObservation records the owned resources found for an operation key.
 type SandboxObservation struct {
 	State      SandboxState
 	Matches    []SandboxRef // READY requires exactly one owned resource.
@@ -126,12 +145,14 @@ type SandboxObservation struct {
 	ObservedAt time.Time
 }
 
+// CommandSpec describes a process invocation without shell interpolation.
 type CommandSpec struct {
 	Argv    []string // Passed as arguments, never joined into an unescaped shell command.
 	Workdir string
 	Env     map[string]string // Non-secret values only.
 }
 
+// StartRequest binds a command, credentials, and deadline to an operation key.
 type StartRequest struct {
 	Key          OperationKey
 	Command      CommandSpec
@@ -140,14 +161,17 @@ type StartRequest struct {
 	Deadline     time.Time
 }
 
+// ProcessRef identifies an execution receipt within a sandbox.
 type ProcessRef struct {
 	Sandbox SandboxRef
 	ID      string // Stable execution receipt, not an unqualified reusable OS PID.
 	Key     OperationKey
 }
 
+// ProcessState describes the observed state of a keyed process execution.
 type ProcessState string
 
+// Observed process execution states.
 const (
 	ProcessNotStarted ProcessState = "NOT_STARTED" // Authoritative receipt guarantees no launch.
 	ProcessRunning    ProcessState = "RUNNING"
@@ -156,12 +180,14 @@ const (
 	ProcessUnknown    ProcessState = "UNKNOWN"
 )
 
+// ProcessExit records how and when a process terminated.
 type ProcessExit struct {
 	Code       int
 	Signal     string
 	FinishedAt time.Time
 }
 
+// ProcessObservation captures the current receipt and termination state of a process.
 type ProcessObservation struct {
 	State      ProcessState
 	Ref        *ProcessRef
@@ -169,23 +195,27 @@ type ProcessObservation struct {
 	ObservedAt time.Time
 }
 
+// OutputRecord contains a chunk of process output at a stable source position.
 type OutputRecord struct {
 	Offset string // Stable source position across reconnects.
 	Stream string // stdout or stderr.
 	Data   []byte
 }
 
+// OutputPage contains replayable output and the cursor for the next read.
 type OutputPage struct {
 	Records    []OutputRecord
 	NextCursor string
 	EOF        bool // True only when the process exited and output has been drained.
 }
 
+// StopPolicy specifies the signal and grace period for process termination.
 type StopPolicy struct {
 	Signal      string
 	GracePeriod time.Duration
 }
 
+// SandboxProvider defines the backend operations used by execution activities.
 // Each configured backend is one provider instance. Ensure/Start are keyed
 // operations: an uncertain outcome must be reconciled, never blindly repeated.
 type SandboxProvider interface {
@@ -205,16 +235,19 @@ type SandboxProvider interface {
 	WriteFile(ctx context.Context, sandbox SandboxRef, path string, contents io.Reader, size int64) error
 }
 
+// AdapterIdentity identifies an agent implementation and its version.
 type AdapterIdentity struct {
 	ID      string
 	Version string
 }
 
+// InputAsset maps a stored artifact to an agent workspace path.
 type InputAsset struct {
 	Path        string
 	ArtifactRef string
 }
 
+// AgentInput contains the task data needed to construct an execution plan.
 type AgentInput struct {
 	TaskID string
 	RunID  string
@@ -223,11 +256,13 @@ type AgentInput struct {
 	Config json.RawMessage
 }
 
+// InputFile contains a workspace path and the bytes to write before execution.
 type InputFile struct {
 	Path string
 	Data []byte
 }
 
+// AgentPlan specifies the command, inputs, credentials, and expected outputs for a run.
 type AgentPlan struct {
 	SecretRefs        map[string]string // Destination env name -> versioned secret reference; never a secret value.
 	Command           CommandSpec
@@ -236,6 +271,7 @@ type AgentPlan struct {
 	RequiredArtifacts []string
 }
 
+// AgentEvent represents an adapter event decoded from process output.
 type AgentEvent struct {
 	SourceOffset string
 	Index        uint32 // Deterministic index when one record produces several events.
@@ -243,29 +279,34 @@ type AgentEvent struct {
 	Payload      json.RawMessage
 }
 
+// DecodedOutput contains decoded events and the next bounded parser checkpoint.
 type DecodedOutput struct {
 	Events    []AgentEvent
 	NextState []byte // Bounded parser checkpoint, committed with the output cursor.
 }
 
+// ArtifactCandidate identifies a workspace file proposed for archival.
 type ArtifactCandidate struct {
 	Path      string
 	MediaType string
 	Required  bool
 }
 
+// AgentResult contains the adapter’s outcome and candidate artifacts.
 type AgentResult struct {
 	Succeeded bool
 	Summary   string
 	Artifacts []ArtifactCandidate
 }
 
+// WorkspaceReader provides read access to the current run’s files.
 // Reader is restricted to this Run's workspace; adapters cannot access other
 // sandboxes, host files, Temporal, or backend administration APIs.
 type WorkspaceReader interface {
 	Read(ctx context.Context, path string) (io.ReadCloser, error)
 }
 
+// AgentAdapter translates task input and process output into platform contracts.
 // Plan and Decode are deterministic for the same input and adapter version.
 // The platform owns execution, cancellation, retries, persistence, and cleanup.
 type AgentAdapter interface {

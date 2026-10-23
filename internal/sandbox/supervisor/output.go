@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -44,7 +45,7 @@ func (s *Supervisor) appendOutput(file *os.File, stream string, data []byte) err
 }
 
 func (s *Supervisor) readOutput(id, stream string, pipe *os.File, literals [][]byte) {
-	defer pipe.Close()
+	defer pipe.Close() //nolint:errcheck // Release the read end after output has been drained.
 	defer func() {
 		s.mu.Lock()
 		defer s.mu.Unlock()
@@ -60,7 +61,12 @@ func (s *Supervisor) readOutput(id, stream string, pipe *os.File, literals [][]b
 		_, _ = io.Copy(io.Discard, pipe)
 		return
 	}
-	defer file.Close()
+	defer func() {
+		if err := file.Close(); err != nil {
+			// appendOutput checks every write and sync; this is descriptor cleanup.
+			slog.Warn("cannot close sandbox output log")
+		}
+	}()
 	filter := redactor{values: literals}
 	buffer := make([]byte, 8192)
 	failed := false
@@ -85,6 +91,7 @@ func (s *Supervisor) readOutput(id, stream string, pipe *os.File, literals [][]b
 	}
 }
 
+// Output reads a bounded page from a process’s durable output log.
 func (s *Supervisor) Output(key core.OperationKey, cursor string, maximum int) (core.OutputPage, error) {
 	var page core.OutputPage
 	id, err := identity(key)
@@ -126,7 +133,7 @@ func (s *Supervisor) Output(key core.OperationKey, cursor string, maximum int) (
 	} else if err != nil {
 		return page, err
 	} else {
-		defer file.Close()
+		defer file.Close() //nolint:errcheck // The output log is read-only; read errors are returned below.
 		info, err := file.Stat()
 		if err != nil {
 			return page, err

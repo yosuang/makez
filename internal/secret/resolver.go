@@ -14,6 +14,7 @@ import (
 	"strings"
 )
 
+// Secret access errors that never include credential values.
 var (
 	ErrDenied      = errors.New("secret reference denied")
 	ErrUnavailable = errors.New("secret unavailable")
@@ -43,8 +44,10 @@ type Source struct {
 // Registry maps workspace IDs to versioned logical references such as api-key@1.
 type Registry map[string]map[string]Source
 
+// Resolver authorizes and resolves credentials from a private registry copy.
 type Resolver struct{ registry Registry }
 
+// New validates and copies the server’s secret registry.
 func New(registry Registry) (*Resolver, error) {
 	copied := make(Registry, len(registry))
 	for workspace, sources := range registry {
@@ -153,7 +156,7 @@ func readSource(source Source) (string, error) {
 	if err != nil {
 		return "", ErrUnavailable
 	}
-	defer root.Close()
+	defer root.Close() //nolint:errcheck // Release the read-only secret directory handle.
 	name := filepath.Base(source.File)
 	before, err := root.Lstat(name)
 	if err != nil || !before.Mode().IsRegular() || before.Mode().Perm()&0077 != 0 || before.Size() > maxFileBytes {
@@ -163,7 +166,7 @@ func readSource(source Source) (string, error) {
 	if err != nil {
 		return "", ErrUnavailable
 	}
-	defer file.Close()
+	defer file.Close() //nolint:errcheck // The secret file is read-only; read errors are handled below.
 	after, err := file.Stat()
 	if err != nil || !os.SameFile(before, after) || !after.Mode().IsRegular() || after.Mode().Perm()&0077 != 0 || after.Size() > maxFileBytes {
 		return "", ErrUnavailable

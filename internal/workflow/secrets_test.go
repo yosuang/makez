@@ -98,9 +98,10 @@ func TestPrepareRejectsUnavailableSecretsBeforeCreatingSandbox(t *testing.T) {
 		t.Run(scenario, func(t *testing.T) {
 			t.Setenv("MAKEZ_WORKFLOW_TEST_AUTH", "")
 			a, task, provider, _ := secretActivities(t, false)
-			if scenario == "missing resolver" {
+			switch scenario {
+			case "missing resolver":
 				a.Secrets = nil
-			} else if scenario == "unregistered reference" {
+			case "unregistered reference":
 				r, err := secret.New(nil)
 				if err != nil {
 					t.Fatal(err)

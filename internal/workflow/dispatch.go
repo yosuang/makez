@@ -18,6 +18,7 @@ import (
 	tw "go.temporal.io/sdk/workflow"
 )
 
+// Recovery reconciles unfinished execution and cleanup after interrupted dispatch.
 func Recovery(ctx tw.Context, in Input) error {
 	ctx = tw.WithActivityOptions(ctx, tw.ActivityOptions{StartToCloseTimeout: 5 * time.Minute, HeartbeatTimeout: 30 * time.Second, RetryPolicy: &temporal.RetryPolicy{InitialInterval: time.Second, MaximumInterval: 10 * time.Second, MaximumAttempts: 5}})
 	return tw.ExecuteActivity(ctx, "Finalize", FinishInput{Input: in, Reason: "WORKFLOW_INTERRUPTED"}).Get(ctx, nil)

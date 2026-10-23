@@ -18,7 +18,11 @@ func TestRunRejectsOccupiedPortBeforeStartingServices(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { listener.Close() })
+	t.Cleanup(func() {
+		if err := listener.Close(); err != nil {
+			t.Error(err)
+		}
+	})
 	t.Setenv("MAKEZ_LISTEN", listener.Addr().String())
 	t.Setenv("MAKEZ_DATABASE_URL", "invalid-database-url")
 	t.Setenv("MAKEZ_CLI_AGENT", "")

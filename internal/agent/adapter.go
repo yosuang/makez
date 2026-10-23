@@ -32,6 +32,7 @@ type cli struct {
 	demo   bool
 }
 
+// NewCLI validates and copies a CLI adapter configuration.
 func NewCLI(config Config) (core.AgentAdapter, error) {
 	if config.ID == "" || config.Version == "" || len(config.Argv) == 0 || !path.IsAbs(config.Argv[0]) {
 		return nil, fmt.Errorf("CLI ID, version and absolute executable path are required")

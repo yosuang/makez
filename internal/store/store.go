@@ -1,3 +1,4 @@
+// Package store persists tasks, runs, events, and dispatch commands in PostgreSQL.
 package store
 
 import (
@@ -22,11 +23,13 @@ import (
 //go:embed schema.sql
 var schema string
 
+// Store owns the PostgreSQL connection pool and persistence metrics.
 type Store struct {
 	pool    *pgxpool.Pool
 	Metrics *telemetry.Metrics
 }
 
+// Open opens a store with the default connection limit.
 func Open(ctx context.Context, url string) (*Store, error) {
 	return OpenWithLimit(ctx, url, 16)
 }
@@ -55,13 +58,17 @@ func OpenWithLimit(ctx context.Context, url string, maxConns int32) (*Store, err
 	}
 	return &Store{pool: pool}, nil
 }
+
+// Close releases all database connections.
 func (s *Store) Close() { s.pool.Close() }
+
+// Migrate applies embedded schema migrations under a database lock.
 func (s *Store) Migrate(ctx context.Context) error {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback(ctx)
+	defer tx.Rollback(ctx) //nolint:errcheck // Commit closes the transaction; pgx discards the connection on rollback failure.
 	if _, err = tx.Exec(ctx, "SELECT pg_advisory_xact_lock(746302945)"); err != nil {
 		return err
 	}
@@ -180,6 +187,7 @@ func enqueue(ctx context.Context, tx pgx.Tx, t Task, command string) error {
 	return err
 }
 
+// Submit creates a task and dispatch command, or returns its idempotent replay.
 func (s *Store) Submit(ctx context.Context, workspace, key string, input SubmitInput) (Task, bool, error) {
 	if workspace == "" || len(workspace) > 128 || key == "" || len(key) > 256 || input.Prompt == "" || len(input.Prompt) > 1<<20 || input.AgentID == "" || input.AgentVersion == "" || input.ProfileID == "" || input.ProfileVersion == "" {
 		return Task{}, false, fmt.Errorf("invalid task input: %w", ErrInvalidInput)
@@ -187,7 +195,8 @@ func (s *Store) Submit(ctx context.Context, workspace, key string, input SubmitI
 	var err error
 	input.Config, err = canonicalConfig(input.Config)
 	if err != nil {
-		return Task{}, false, fmt.Errorf("%w: %v", ErrInvalidInput, err)
+		// Only the input classification is part of the error contract.
+		return Task{}, false, fmt.Errorf("%w: %s", ErrInvalidInput, err.Error())
 	}
 	if len(input.Config) > 64<<10 {
 		return Task{}, false, fmt.Errorf("%w: config exceeds 64 KiB", ErrInvalidInput)
@@ -217,7 +226,7 @@ func (s *Store) Submit(ctx context.Context, workspace, key string, input SubmitI
 	if err != nil {
 		return Task{}, false, err
 	}
-	defer tx.Rollback(ctx)
+	defer tx.Rollback(ctx) //nolint:errcheck // Commit closes the transaction; pgx discards the connection on rollback failure.
 	var previousID, previousHash string
 	err = tx.QueryRow(ctx, `SELECT id,request_hash FROM makez_tasks WHERE workspace_id=$1 AND idempotency_key=$2 FOR UPDATE`, workspace, key).Scan(&previousID, &previousHash)
 	if err == nil {
@@ -266,6 +275,8 @@ func (s *Store) Submit(ctx context.Context, workspace, key string, input SubmitI
 	}
 	return t, created, nil
 }
+
+// Get loads a task within its workspace.
 func (s *Store) Get(ctx context.Context, workspace, id string) (Task, error) {
 	t, err := scanTask(s.pool.QueryRow(ctx, "SELECT "+taskColumns+" FROM makez_tasks t WHERE workspace_id=$1 AND id=$2", workspace, id))
 	if err == nil {
@@ -273,6 +284,8 @@ func (s *Store) Get(ctx context.Context, workspace, id string) (Task, error) {
 	}
 	return t, err
 }
+
+// List returns recent tasks within a workspace.
 func (s *Store) List(ctx context.Context, workspace string) ([]Task, error) {
 	return s.list(ctx, "WHERE t.workspace_id=$1 ORDER BY t.created_at DESC LIMIT 100", workspace)
 }
@@ -285,8 +298,10 @@ type RecoveryCursor struct {
 	Through time.Time
 }
 
+// RecoveryPageSize bounds each scan for tasks requiring workflow recovery.
 const RecoveryPageSize = 100
 
+// Recoverable lists tasks requiring execution or cleanup recovery after the cursor.
 func (s *Store) Recoverable(ctx context.Context, after RecoveryCursor) ([]Task, error) {
 	through := after.Through
 	if through.IsZero() {
@@ -321,12 +336,14 @@ func (s *Store) list(ctx context.Context, where string, args ...any) ([]Task, er
 	}
 	return tasks, nil
 }
+
+// Cancel records cancellation and queues the corresponding workflow command.
 func (s *Store) Cancel(ctx context.Context, workspace, id string) (Task, error) {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return Task{}, err
 	}
-	defer tx.Rollback(ctx)
+	defer tx.Rollback(ctx) //nolint:errcheck // Commit closes the transaction; pgx discards the connection on rollback failure.
 	t, err := taskInTx(ctx, tx, workspace, id)
 	if err != nil {
 		return Task{}, err
@@ -358,6 +375,8 @@ func (s *Store) Cancel(ctx context.Context, workspace, id string) (Task, error) 
 	}
 	return t, nil
 }
+
+// InitializeRun creates the execution run once and updates the task state.
 func (s *Store) InitializeRun(ctx context.Context, workspace, id, backend string) (Task, error) {
 	if backend == "" {
 		return Task{}, fmt.Errorf("backend is required")
@@ -366,7 +385,7 @@ func (s *Store) InitializeRun(ctx context.Context, workspace, id, backend string
 	if err != nil {
 		return Task{}, err
 	}
-	defer tx.Rollback(ctx)
+	defer tx.Rollback(ctx) //nolint:errcheck // Commit closes the transaction; pgx discards the connection on rollback failure.
 	t, err := taskInTx(ctx, tx, workspace, id)
 	if err != nil {
 		return Task{}, err

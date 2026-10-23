@@ -26,7 +26,7 @@ func testMetrics(t *testing.T) (*Metrics, *sdkmetric.ManualReader) {
 	return m, reader
 }
 
-func collect(t *testing.T, ctx context.Context, reader *sdkmetric.ManualReader) map[string]metricdata.Metrics {
+func collect(ctx context.Context, t *testing.T, reader *sdkmetric.ManualReader) map[string]metricdata.Metrics {
 	t.Helper()
 	var data metricdata.ResourceMetrics
 	if err := reader.Collect(ctx, &data); err != nil {
@@ -55,7 +55,7 @@ func TestInstrumentTypesUnitsValuesAndBuckets(t *testing.T) {
 	if err := m.RegisterBacklog(func(context.Context) (Backlog, error) { return Backlog{3, 120, 2, 1}, nil }); err != nil {
 		t.Fatal(err)
 	}
-	data := collect(t, ctx, reader)
+	data := collect(ctx, t, reader)
 	if len(data) != 11 {
 		t.Fatalf("expected all 11 instruments, got %d", len(data))
 	}
@@ -144,7 +144,7 @@ func TestInstrumentTypesUnitsValuesAndBuckets(t *testing.T) {
 	canceled, cancel := context.WithCancel(ctx)
 	cancel()
 	m.Streams.Add(canceled, -1)
-	if got := collect(t, ctx, reader)["makez_sse_active"].Data.(metricdata.Sum[int64]).DataPoints[0].Value; got != 0 {
+	if got := collect(ctx, t, reader)["makez_sse_active"].Data.(metricdata.Sum[int64]).DataPoints[0].Value; got != 0 {
 		t.Fatalf("active streams=%d", got)
 	}
 }
@@ -165,11 +165,11 @@ func TestBacklogFailureOmitsStaleSamplesAndKeepsOtherMetrics(t *testing.T) {
 		t.Fatal(err)
 	}
 	m.OutboxRetries.Add(t.Context(), 1)
-	if _, ok := collect(t, t.Context(), reader)["makez_outbox_pending"]; !ok {
+	if _, ok := collect(t.Context(), t, reader)["makez_outbox_pending"]; !ok {
 		t.Fatal("missing successful sample")
 	}
 	fail = true
-	data := collect(t, t.Context(), reader)
+	data := collect(t.Context(), t, reader)
 	for _, name := range []string{"makez_outbox_pending", "makez_outbox_oldest_seconds", "makez_cleanup_runs"} {
 		if _, ok := data[name]; ok {
 			t.Fatalf("stale sample was reported as current: %s", name)
