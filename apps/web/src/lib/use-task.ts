@@ -9,12 +9,12 @@ import {
   type Task,
 } from "./api";
 
-export function useTask(token: string, id: string) {
+export function useTask(baseUrl: string, token: string, id: string) {
   const [task, setTask] = useState<Task>();
   const [events, setEvents] = useState<RunEvent[]>([]);
   const [artifacts, setArtifacts] = useState<Artifact[]>([]);
   const [error, setError] = useState("");
-  const [streamState, setStreamState] = useState("等待连接");
+  const [streamState, setStreamState] = useState("Waiting to connect");
 
   useEffect(() => {
     setTask(undefined);
@@ -31,9 +31,10 @@ export function useTask(token: string, id: string) {
 
     async function refresh() {
       try {
-        const current: Task = await (await api(token, `/v1/tasks/${id}`, options)).json();
+        const auth = { baseUrl, token };
+        const current: Task = await (await api(auth, `/v1/tasks/${id}`, options)).json();
         const files: Artifact[] = await (
-          await api(token, `/v1/tasks/${id}/artifacts`, options)
+          await api(auth, `/v1/tasks/${id}/artifacts`, options)
         ).json();
         if (controller.signal.aborted) return;
         setTask(current);
@@ -41,7 +42,7 @@ export function useTask(token: string, id: string) {
         setError("");
       } catch (err) {
         if (!controller.signal.aborted)
-          setError(err instanceof Error ? err.message : "无法读取任务");
+          setError(err instanceof Error ? err.message : "Could not load the task");
       } finally {
         if (!controller.signal.aborted) poll = setTimeout(refresh, 5000);
       }
@@ -49,17 +50,17 @@ export function useTask(token: string, id: string) {
 
     async function observe() {
       try {
-        setStreamState(cursor === "0" ? "正在连接" : "正在重连");
-        const response = await api(token, `/v1/tasks/${id}/events`, {
+        setStreamState(cursor === "0" ? "Connecting" : "Reconnecting");
+        const response = await api({ baseUrl, token }, `/v1/tasks/${id}/events`, {
           ...options,
           headers: { "Last-Event-ID": cursor },
         });
-        if (!response.body) throw new Error("日志流不可用");
+        if (!response.body) throw new Error("Event stream is unavailable");
         if (controller.signal.aborted) {
           await response.body.cancel();
           return;
         }
-        setStreamState("实时连接");
+        setStreamState("Live");
         await readEvents(response.body, (message) => {
           if (controller.signal.aborted) return;
           if (message.type === "status") {
@@ -79,9 +80,9 @@ export function useTask(token: string, id: string) {
         });
         if (controller.signal.aborted) return;
         if (ended) {
-          setStreamState("日志已同步");
+          setStreamState("Log synced");
           const files: Artifact[] = await (
-            await api(token, `/v1/tasks/${id}/artifacts`, options)
+            await api({ baseUrl, token }, `/v1/tasks/${id}/artifacts`, options)
           ).json();
           if (!controller.signal.aborted) setArtifacts(files);
           return;
@@ -89,13 +90,13 @@ export function useTask(token: string, id: string) {
       } catch (err) {
         if (controller.signal.aborted) return;
         if (err instanceof APIError && [401, 403, 404].includes(err.status)) {
-          setStreamState("连接不可用");
+          setStreamState("Connection unavailable");
           setError(err.message);
           return;
         }
       }
       if (!controller.signal.aborted) {
-        setStreamState("连接中断，正在重连");
+        setStreamState("Connection lost. Reconnecting");
         reconnect = setTimeout(observe, 2000);
       }
     }
@@ -106,7 +107,7 @@ export function useTask(token: string, id: string) {
       clearTimeout(reconnect);
       clearTimeout(poll);
     };
-  }, [token, id]);
+  }, [baseUrl, token, id]);
 
   return { task, events, artifacts, error, streamState, setTask };
 }

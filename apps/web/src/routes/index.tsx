@@ -1,5 +1,5 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { useEffect, useRef, useState, type FormEvent } from "react";
+import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
 import {
   ArrowDown,
   ArrowDownToLine,
@@ -27,31 +27,42 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@makez/ui/components/dialog";
-import { api, eventText, terminal, type Agent, type Artifact, type Task } from "@/lib/api";
+import {
+  api,
+  defaultAPIBaseURL,
+  eventText,
+  readConnection,
+  terminal,
+  writeConnection,
+  type Agent,
+  type Artifact,
+  type Task,
+} from "@/lib/api";
 import { useTask } from "@/lib/use-task";
 
 export const Route = createFileRoute("/")({ component: Console });
 
 const stateNames: Record<string, string> = {
-  QUEUED: "排队中",
-  RUNNING: "执行中",
-  CANCELING: "取消中",
-  SUCCEEDED: "已完成",
-  FAILED: "失败",
-  CANCELED: "已取消",
-  PREPARING: "准备环境",
-  STARTING: "启动 Agent",
-  STOPPING: "停止执行",
-  FINALIZING: "归档成果",
-  NOT_REQUIRED: "无需清理",
-  PENDING: "等待清理",
-  DONE: "已清理",
-  BLOCKED: "清理受阻",
+  QUEUED: "Queued",
+  RUNNING: "Running",
+  CANCELING: "Canceling",
+  SUCCEEDED: "Succeeded",
+  FAILED: "Failed",
+  CANCELED: "Canceled",
+  PREPARING: "Preparing",
+  STARTING: "Starting Agent",
+  STOPPING: "Stopping",
+  FINALIZING: "Archiving",
+  NOT_REQUIRED: "No cleanup",
+  PENDING: "Cleanup pending",
+  DONE: "Cleaned up",
+  BLOCKED: "Cleanup blocked",
 };
-const label = (state?: string) => (state ? stateNames[state] || state : "尚未开始");
-const message = (err: unknown) => (err instanceof Error ? err.message : "请求失败，请重试");
+const label = (state?: string) => (state ? stateNames[state] || state : "Not started");
+const message = (err: unknown) =>
+  err instanceof Error ? err.message : "Request failed. Try again.";
 const date = (value: string) =>
-  new Date(value).toLocaleString("zh-CN", {
+  new Date(value).toLocaleString("en-US", {
     month: "2-digit",
     day: "2-digit",
     hour: "2-digit",
@@ -69,14 +80,47 @@ function Status({ state }: { state: string }) {
 }
 
 function Console() {
-  const [session, setSession] = useState<{ token: string; agents: Agent[] }>();
+  const stored = useRef(readConnection());
+  const [session, setSession] = useState<{ baseUrl: string; token: string; agents: Agent[] }>();
   const [draft, setDraft] = useState("");
   const [connectOpen, setConnectOpen] = useState(false);
-  const [key, setKey] = useState("");
+  const [server, setServer] = useState(stored.current.baseUrl);
+  const [key, setKey] = useState(stored.current.token);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const connection = useRef<AbortController | null>(null);
-  useEffect(() => () => connection.current?.abort(), []);
+
+  const connectTo = useCallback(async (baseUrl: string, token: string, signal: AbortSignal) => {
+    const agents: Agent[] | null = await (
+      await api({ baseUrl, token }, "/v1/agents", { signal })
+    ).json();
+    if (signal.aborted) return;
+    writeConnection({ baseUrl, token });
+    setSession({ baseUrl, token, agents: agents ?? [] });
+    setConnectOpen(false);
+  }, []);
+
+  useEffect(() => {
+    const token = stored.current.token.trim();
+    const baseUrl = stored.current.baseUrl.trim();
+    if (!token || !baseUrl) return;
+    const controller = new AbortController();
+    connection.current = controller;
+    setBusy(true);
+    void (async () => {
+      try {
+        await connectTo(baseUrl, token, controller.signal);
+      } catch (err) {
+        if (!controller.signal.aborted) {
+          setError(message(err));
+          setConnectOpen(true);
+        }
+      } finally {
+        if (!controller.signal.aborted) setBusy(false);
+      }
+    })();
+    return () => controller.abort();
+  }, [connectTo]);
 
   async function connect(event: FormEvent) {
     event.preventDefault();
@@ -86,13 +130,7 @@ function Console() {
     setBusy(true);
     setError("");
     try {
-      const agents: Agent[] | null = await (
-        await api(key.trim(), "/v1/agents", { signal: controller.signal })
-      ).json();
-      if (controller.signal.aborted) return;
-      setSession({ token: key.trim(), agents: agents ?? [] });
-      setKey("");
-      setConnectOpen(false);
+      await connectTo(server.trim(), key.trim(), controller.signal);
     } catch (err) {
       if (!controller.signal.aborted) setError(message(err));
     } finally {
@@ -103,7 +141,8 @@ function Console() {
   return (
     <>
       <Workspace
-        key={session?.token ?? "disconnected"}
+        key={session ? `${session.baseUrl}\0${session.token}` : "disconnected"}
+        baseUrl={session?.baseUrl ?? ""}
         token={session?.token ?? ""}
         agents={session?.agents ?? []}
         draft={draft}
@@ -112,7 +151,11 @@ function Console() {
           setError("");
           setConnectOpen(true);
         }}
-        onDisconnect={() => setSession(undefined)}
+        onDisconnect={() => {
+          writeConnection({ baseUrl: session?.baseUrl || server.trim(), token: "" });
+          setKey("");
+          setSession(undefined);
+        }}
       />
       <Dialog
         open={connectOpen}
@@ -121,24 +164,36 @@ function Console() {
           if (!open) {
             connection.current?.abort();
             setBusy(false);
-            setKey("");
           }
         }}
       >
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>连接工作区</DialogTitle>
+            <DialogTitle>Connect workspace</DialogTitle>
             <DialogDescription>
-              使用 Go 服务提供的工作区 API Key。密钥只保留在当前页面内存中，刷新后需要重新连接。
+              Enter the makez server address and workspace API Key. A successful connection stays in
+              this browser, and requests go directly to that server.
             </DialogDescription>
           </DialogHeader>
           <form onSubmit={connect} className="connect-form">
-            <label htmlFor="workspace-key">工作区 API Key</label>
+            <label htmlFor="server-url">makez server address</label>
+            <Input
+              id="server-url"
+              type="url"
+              inputMode="url"
+              autoComplete="off"
+              spellCheck={false}
+              placeholder={defaultAPIBaseURL}
+              value={server}
+              onChange={(event) => setServer(event.target.value)}
+              required
+            />
+            <label htmlFor="workspace-key">Workspace API Key</label>
             <Input
               id="workspace-key"
               type="password"
               autoComplete="off"
-              placeholder="输入工作区 API Key"
+              placeholder="Workspace API Key"
               value={key}
               onChange={(event) => setKey(event.target.value)}
               required
@@ -149,8 +204,8 @@ function Console() {
                 {error}
               </p>
             )}
-            <Button type="submit" disabled={busy || !key.trim()}>
-              {busy && <LoaderCircle className="spin" />}连接工作区
+            <Button type="submit" disabled={busy || !server.trim() || !key.trim()}>
+              {busy && <LoaderCircle className="spin" />}Connect
             </Button>
           </form>
         </DialogContent>
@@ -162,6 +217,7 @@ function Console() {
 type DraftProps = { draft: string; onDraftChange: (value: string) => void };
 
 function Workspace({
+  baseUrl,
   token,
   agents,
   onConnect,
@@ -169,6 +225,7 @@ function Workspace({
   draft,
   onDraftChange,
 }: DraftProps & {
+  baseUrl: string;
   token: string;
   agents: Agent[];
   onConnect: () => void;
@@ -184,7 +241,7 @@ function Workspace({
   const [loading, setLoading] = useState(Boolean(token));
   const [canceling, setCanceling] = useState(false);
   const [downloading, setDownloading] = useState("");
-  const { task, events, artifacts, error, streamState, setTask } = useTask(token, active);
+  const { task, events, artifacts, error, streamState, setTask } = useTask(baseUrl, token, active);
   const logs = useRef<HTMLDivElement>(null);
   const follow = useRef(true);
   const [autoScroll, setAutoScroll] = useState(true);
@@ -196,7 +253,7 @@ function Workspace({
     async function refresh() {
       try {
         const data: Task[] = await (
-          await api(token, "/v1/tasks", { signal: controller.signal })
+          await api({ baseUrl, token }, "/v1/tasks", { signal: controller.signal })
         ).json();
         if (!controller.signal.aborted) {
           setTasks(data);
@@ -216,7 +273,7 @@ function Workspace({
       controller.abort();
       clearTimeout(timer);
     };
-  }, [token]);
+  }, [baseUrl, token]);
 
   useEffect(() => {
     if (follow.current && logs.current) logs.current.scrollTop = logs.current.scrollHeight;
@@ -237,7 +294,7 @@ function Workspace({
     setActionError("");
     try {
       const updated: Task = await (
-        await api(token, `/v1/tasks/${active}/cancel`, { method: "POST" })
+        await api({ baseUrl, token }, `/v1/tasks/${active}/cancel`, { method: "POST" })
       ).json();
       if (activeRef.current === active) setTask(updated);
     } catch (err) {
@@ -251,7 +308,7 @@ function Workspace({
     setDownloading(file.id);
     setActionError("");
     try {
-      const blob = await (await api(token, `/v1/artifacts/${file.id}/content`)).blob();
+      const blob = await (await api({ baseUrl, token }, `/v1/artifacts/${file.id}/content`)).blob();
       const url = URL.createObjectURL(blob);
       const link = document.createElement("a");
       link.href = url;
@@ -276,40 +333,40 @@ function Workspace({
       {sidebarOpen && (
         <button
           className="sidebar-scrim"
-          aria-label="关闭任务列表"
+          aria-label="Close task list"
           onClick={() => setSidebarOpen(false)}
         />
       )}
-      <aside className={`sidebar ${sidebarOpen ? "sidebar-open" : ""}`} aria-label="任务导航">
+      <aside className={`sidebar ${sidebarOpen ? "sidebar-open" : ""}`} aria-label="Tasks">
         <div className="brand">
           <img src="/favicon.svg" width="30" height="30" alt="" />
           <span>makez</span>
         </div>
         <Button className="new-task" variant="outline" onClick={() => select("")}>
           <Plus />
-          新任务
+          New task
         </Button>
         <div className="task-search">
           <Search size={15} />
           <Input
-            aria-label="搜索任务"
-            placeholder="搜索任务…"
+            aria-label="Search tasks"
+            placeholder="Search tasks…"
             value={search}
             onChange={(event) => setSearch(event.target.value)}
           />
         </div>
         <div className="section-label">
-          <span>最近任务</span>
+          <span>Recent</span>
           {tasks.length > 0 && <span>{tasks.length}</span>}
         </div>
-        <nav className="task-list" aria-label="最近任务">
+        <nav className="task-list" aria-label="Recent tasks">
           {loading ? (
-            <p className="sidebar-empty">正在读取任务…</p>
+            <p className="sidebar-empty">Loading tasks…</p>
           ) : !token ? (
-            <p className="sidebar-empty">连接工作区后，你的任务会出现在这里。</p>
+            <p className="sidebar-empty">Connect a workspace to see your tasks here.</p>
           ) : !filtered.length ? (
             <p className="sidebar-empty">
-              {search ? "没有匹配的任务" : "还没有任务，开始一次创造吧。"}
+              {search ? "No matching tasks" : "No tasks yet. Start something."}
             </p>
           ) : (
             filtered.map((item) => (
@@ -342,16 +399,16 @@ function Workspace({
           <div className="workspace-indicator">
             <span className={`connection-dot ${token ? "connected" : ""}`} />
             <div>
-              <strong>{token ? "工作区已连接" : "尚未连接工作区"}</strong>
-              <span>{token ? "任务由后端持续执行" : "使用 API Key 开始"}</span>
+              <strong>{token ? "Workspace connected" : "Not connected"}</strong>
+              <span>{token ? serverHost(baseUrl) : "Add a server address and API Key"}</span>
             </div>
           </div>
           {token ? (
             <Button
               variant="ghost"
               size="icon"
-              title="断开工作区"
-              aria-label="断开工作区"
+              title="Disconnect"
+              aria-label="Disconnect"
               onClick={onDisconnect}
             >
               <LogOut />
@@ -360,8 +417,8 @@ function Workspace({
             <Button
               variant="ghost"
               size="icon"
-              title="连接工作区"
-              aria-label="连接工作区"
+              title="Connect workspace"
+              aria-label="Connect workspace"
               onClick={onConnect}
             >
               <KeyRound />
@@ -375,16 +432,16 @@ function Workspace({
             variant="ghost"
             size="icon"
             className="mobile-menu"
-            aria-label="打开任务列表"
+            aria-label="Open task list"
             onClick={() => setSidebarOpen(true)}
           >
             <Menu />
           </Button>
           <div className="breadcrumbs">
             <Layers2 size={16} />
-            <span>工作台</span>
+            <span>Workbench</span>
             <ChevronRight size={14} />
-            <strong>{active ? "任务详情" : "新任务"}</strong>
+            <strong>{active ? "Task" : "New task"}</strong>
           </div>
           {current && (
             <div className="header-right">
@@ -394,10 +451,10 @@ function Workspace({
         </header>
         {active ? (
           <div className="task-workspace" key={active}>
-            <section className="execution-pane" aria-label="执行记录">
+            <section className="execution-pane" aria-label="Run">
               <div className="request-card">
-                <span className="eyebrow">任务要求</span>
-                <h1>{current?.prompt ?? "正在读取任务…"}</h1>
+                <span className="eyebrow">Request</span>
+                <h1>{current?.prompt ?? "Loading task…"}</h1>
                 {current && (
                   <div className="request-meta">
                     <span>
@@ -420,7 +477,7 @@ function Workspace({
               <div className="events-header">
                 <div>
                   <Terminal size={15} />
-                  <h2>运行记录</h2>
+                  <h2>Log</h2>
                 </div>
                 <span className="stream-state">{streamState}</span>
               </div>
@@ -428,7 +485,7 @@ function Workspace({
                 className="event-log"
                 ref={logs}
                 role="log"
-                aria-label="运行日志"
+                aria-label="Run log"
                 aria-live="off"
                 tabIndex={0}
                 onScroll={() => {
@@ -445,16 +502,16 @@ function Workspace({
                     <Terminal size={28} />
                     <p>
                       {current && terminal(current.state)
-                        ? "本次任务没有运行日志"
-                        : "等待 Agent 的第一条记录"}
+                        ? "This task has no log"
+                        : "Waiting for the Agent's first update"}
                     </p>
-                    <span>运行过程会实时显示在这里</span>
+                    <span>The run shows up here as it happens</span>
                   </div>
                 ) : (
                   events.map((event) => (
                     <div className="log-line" key={event.seq}>
                       <time>
-                        {new Date(event.created_at).toLocaleTimeString("zh-CN", { hour12: false })}
+                        {new Date(event.created_at).toLocaleTimeString("en-US", { hour12: false })}
                       </time>
                       <pre>{eventText(event.payload)}</pre>
                     </div>
@@ -463,7 +520,9 @@ function Workspace({
               </div>
               <div className="execution-footer">
                 <span>
-                  {events.length >= 1000 ? "仅显示最近 1000 条记录" : `${events.length} 条运行记录`}
+                  {events.length >= 1000
+                    ? "Showing the latest 1,000 entries"
+                    : `${events.length} entries`}
                 </span>
                 {!autoScroll && (
                   <Button
@@ -476,29 +535,29 @@ function Workspace({
                     }}
                   >
                     <ArrowDown />
-                    回到最新
+                    Jump to latest
                   </Button>
                 )}
-                <span>关闭页面不会中断任务</span>
+                <span>Leaving this page does not stop the task</span>
               </div>
             </section>
-            <aside className="inspector" aria-label="任务信息与成果">
+            <aside className="inspector" aria-label="Task details">
               <section>
                 <h2>
                   <CircleDot size={15} />
-                  执行状态
+                  Status
                 </h2>
                 <dl className="status-list">
                   <div>
-                    <dt>任务</dt>
+                    <dt>Task</dt>
                     <dd>{current ? <Status state={current.state} /> : "—"}</dd>
                   </div>
                   <div>
-                    <dt>执行阶段</dt>
+                    <dt>Stage</dt>
                     <dd>{label(current?.run?.state)}</dd>
                   </div>
                   <div>
-                    <dt>环境清理</dt>
+                    <dt>Cleanup</dt>
                     <dd>{label(current?.run?.cleanup_state)}</dd>
                   </div>
                 </dl>
@@ -510,14 +569,14 @@ function Workspace({
                     onClick={cancel}
                   >
                     {canceling ? <LoaderCircle className="spin" /> : <Square size={12} />}
-                    {current.cancel_requested ? "正在取消…" : "取消任务"}
+                    {current.cancel_requested ? "Canceling…" : "Cancel task"}
                   </Button>
                 )}
               </section>
               <section className="artifacts-section">
                 <h2>
                   <Layers2 size={15} />
-                  交付成果<span className="count">{artifacts.length}</span>
+                  Artifacts<span className="count">{artifacts.length}</span>
                 </h2>
                 {artifacts.length ? (
                   <div className="artifact-list">
@@ -535,7 +594,7 @@ function Workspace({
                         <Button
                           size="icon"
                           variant="ghost"
-                          aria-label={`下载 ${file.path}`}
+                          aria-label={`Download ${file.path}`}
                           disabled={Boolean(downloading)}
                           onClick={() => download(file)}
                         >
@@ -552,23 +611,25 @@ function Workspace({
                   <div className="artifacts-empty">
                     <File size={24} />
                     <p>
-                      {current && terminal(current.state) ? "没有已归档成果" : "成果将在这里呈现"}
+                      {current && terminal(current.state)
+                        ? "No archived artifacts"
+                        : "Artifacts show up here"}
                     </p>
-                    <span>任务完成并归档后即可下载</span>
+                    <span>Download them after the task is archived</span>
                   </div>
                 )}
               </section>
               {current && (
                 <section className="task-metadata">
-                  <h2>任务信息</h2>
+                  <h2>Details</h2>
                   <dl>
-                    <dt>任务 ID</dt>
+                    <dt>Task ID</dt>
                     <dd>{current.id}</dd>
                     <dt>Agent</dt>
                     <dd>
                       {current.agent_id}@{current.agent_version}
                     </dd>
-                    <dt>截止时间</dt>
+                    <dt>Deadline</dt>
                     <dd>{date(current.deadline)}</dd>
                   </dl>
                 </section>
@@ -579,6 +640,7 @@ function Workspace({
           <NewTask
             draft={draft}
             onDraftChange={onDraftChange}
+            baseUrl={baseUrl}
             token={token}
             agents={agents}
             onConnect={onConnect}
@@ -597,7 +659,16 @@ function Workspace({
   );
 }
 
+function serverHost(baseUrl: string) {
+  try {
+    return new URL(baseUrl).host;
+  } catch {
+    return baseUrl;
+  }
+}
+
 function NewTask({
+  baseUrl,
   token,
   agents,
   onConnect,
@@ -605,6 +676,7 @@ function NewTask({
   draft: prompt,
   onDraftChange: setPrompt,
 }: DraftProps & {
+  baseUrl: string;
   token: string;
   agents: Agent[];
   onConnect: () => void;
@@ -626,7 +698,7 @@ function NewTask({
     }
     if (!agent || !prompt.trim()) return;
     if (new TextEncoder().encode(prompt).byteLength > 65536) {
-      setError("任务要求不能超过 65536 字节");
+      setError("The request cannot exceed 65536 bytes");
       return;
     }
     const [agent_id, agent_version] = agent.split("@");
@@ -642,7 +714,7 @@ function NewTask({
     setError("");
     try {
       const task = (await (
-        await api(token, "/v1/tasks", {
+        await api({ baseUrl, token }, "/v1/tasks", {
           method: "POST",
           body,
           headers: { "Idempotency-Key": attempt.current.key },
@@ -661,15 +733,15 @@ function NewTask({
     <section className="create-page">
       <div className="create-content">
         <div className="create-intro">
-          <h1>把想法，变成作品。</h1>
+          <h1>Turn an idea into a result.</h1>
         </div>
         <form onSubmit={submit} className="composer">
           <label className="sr-only" htmlFor="prompt">
-            任务要求
+            Request
           </label>
           <Textarea
             id="prompt"
-            placeholder="你想创造什么？描述目标、要求和期望的交付成果…"
+            placeholder="What should the Agent build? Describe the goal and the result you want."
             value={prompt}
             onChange={(event) => setPrompt(event.target.value)}
             required
@@ -687,7 +759,7 @@ function NewTask({
                 onChange={(event) => setAgent(event.target.value)}
                 disabled={!token || busy}
               >
-                {!agents.length && <option value="">连接后选择 Agent</option>}
+                {!agents.length && <option value="">Connect to choose an Agent</option>}
                 {agents.map((item) => (
                   <option key={`${item.ID}@${item.Version}`} value={`${item.ID}@${item.Version}`}>
                     {item.ID}@{item.Version}
@@ -700,8 +772,8 @@ function NewTask({
                 type="submit"
                 size="icon"
                 className="submit-task"
-                aria-label="提交任务"
-                title="提交任务"
+                aria-label="Submit task"
+                title="Submit task"
                 disabled={busy || !agent || !prompt.trim()}
               >
                 {busy ? <LoaderCircle className="spin" /> : <ArrowUp />}
@@ -709,13 +781,13 @@ function NewTask({
             ) : (
               <Button type="button" onClick={onConnect}>
                 <KeyRound />
-                连接工作区
+                Connect
               </Button>
             )}
           </div>
           <div className="composer-options">
             <label htmlFor="timeout">
-              任务期限{" "}
+              Time limit{" "}
               <Input
                 id="timeout"
                 type="number"
@@ -727,11 +799,11 @@ function NewTask({
                 onChange={(event) => setTimeoutValue(event.target.value)}
                 disabled={busy}
               />
-              <span>秒</span>
+              <span>sec</span>
             </label>
             {agent.startsWith("demo@") && (
               <label htmlFor="delay">
-                演示时长{" "}
+                Demo duration{" "}
                 <Input
                   id="delay"
                   type="number"
@@ -743,7 +815,7 @@ function NewTask({
                   onChange={(event) => setDelay(event.target.value)}
                   disabled={busy}
                 />
-                <span>秒</span>
+                <span>sec</span>
               </label>
             )}
           </div>
@@ -755,36 +827,37 @@ function NewTask({
         )}
         {agent.startsWith("demo@") && (
           <p className="agent-note">
-            Demo 用于验证执行与交付流程，不调用模型。真实 Agent 由后端配置。
+            Demo checks the run and delivery flow. It does not call a model. Real Agents come from
+            the server.
           </p>
         )}
         {token && !agents.length && (
           <p className="error" role="alert">
-            当前后端尚未注册可用的 Agent。
+            This server has no Agents registered.
           </p>
         )}
         <div className="creation-hints">
-          <span>从一个具体的目标开始</span>
+          <span>Start from a concrete goal</span>
           <div>
             <button
               type="button"
               onClick={() =>
                 setPrompt(
-                  "制作一个可直接打开的中文待办事项网页，支持新增、完成、删除任务和本地保存，并附使用说明。",
+                  "Build a to-do page I can open directly. Support adding, completing, and deleting tasks, save them locally, and include a short README.",
                 )
               }
             >
-              做一个待办工具
+              Build a to-do app
             </button>
             <button
               type="button"
               onClick={() =>
                 setPrompt(
-                  "制作一个响应式的个人作品集网页，包含个人介绍、作品展示与联系方式，交付完整文件及使用说明。",
+                  "Build a responsive personal portfolio page with an introduction, selected work, and contact details. Deliver the files and a short README.",
                 )
               }
             >
-              搭建个人作品集
+              Build a portfolio
             </button>
           </div>
         </div>

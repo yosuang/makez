@@ -37,7 +37,7 @@ func TestArchiveIsDurableAndRetrySafe(t *testing.T) {
 			t.Error(err)
 		}
 	}()
-	input := memoryWorkspace{"/workspace/report.md": "hello 世界\n"}
+	input := memoryWorkspace{"/workspace/report.md": "hello café\n"}
 	candidates := []core.ArtifactCandidate{{Path: "report.md", MediaType: "text/markdown", Required: true}, {Path: "optional.txt"}}
 	first, err := store.Archive(context.Background(), "run-1", input, candidates)
 	if err != nil {
@@ -60,7 +60,7 @@ func TestArchiveIsDurableAndRetrySafe(t *testing.T) {
 	if err := f.Close(); err != nil {
 		t.Error(err)
 	}
-	if err != nil || string(data) != "hello 世界\n" {
+	if err != nil || string(data) != "hello café\n" {
 		t.Fatalf("stored content missing: %v", err)
 	}
 	files, err := os.ReadDir(filepath.Join(dir, "run-1"))

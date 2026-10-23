@@ -1,10 +1,7 @@
 {
-  "$schema": "node_modules/wrangler/config-schema.json",
+  // Static Cloudflare Pages project. No Worker entry and no API proxy.
+  // Pages serves index.html for unknown paths when the output has no top-level 404.html.
   "name": "makez-web",
-  "main": "src/server.ts",
-  "compatibility_date": "2026-10-18",
-  "compatibility_flags": ["nodejs_compat"],
-  "vars": {
-    "MAKEZ_API_ORIGIN": "http://127.0.0.1:8088",
-  },
+  "pages_build_output_dir": "./dist",
+  "compatibility_date": "2026-10-23",
 }
