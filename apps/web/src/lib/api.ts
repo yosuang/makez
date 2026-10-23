@@ -79,18 +79,18 @@ export function writeConnection(auth: APIAuth) {
 
 export function apiURL(baseUrl: string, path: string) {
   const trimmed = baseUrl.trim();
-  if (!trimmed) throw new APIError("请填写 makez 服务地址", 0);
+  if (!trimmed) throw new APIError("Enter the makez server address", 0);
   let base: URL;
   try {
     base = new URL(trimmed);
   } catch {
-    throw new APIError("makez 服务地址无效", 0);
+    throw new APIError("That makez server address is invalid", 0);
   }
   if (base.protocol !== "http:" && base.protocol !== "https:") {
-    throw new APIError("makez 服务地址必须是 http 或 https", 0);
+    throw new APIError("The makez server address must use http or https", 0);
   }
   if (base.username || base.password) {
-    throw new APIError("makez 服务地址不能包含账号或密码", 0);
+    throw new APIError("The makez server address cannot include a username or password", 0);
   }
   const prefix = base.pathname.replace(/\/+$/, "");
   const suffix = path.startsWith("/") ? path : `/${path}`;
@@ -106,11 +106,11 @@ export async function api(auth: APIAuth, path: string, options: RequestInit = {}
     response = await fetch(apiURL(auth.baseUrl, path), { ...options, headers });
   } catch (err) {
     if (options.signal?.aborted) throw err;
-    throw new APIError("无法连接 makez 服务，请检查地址后重试", 0);
+    throw new APIError("Cannot reach the makez server. Check the address and try again.", 0);
   }
   if (!response.ok) {
     const body = (await response.json().catch(() => ({}))) as { error?: string };
-    throw new APIError(body.error || `请求失败（${response.status}）`, response.status);
+    throw new APIError(body.error || `Request failed (${response.status})`, response.status);
   }
   return response;
 }

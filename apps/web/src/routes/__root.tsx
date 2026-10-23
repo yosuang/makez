@@ -4,8 +4,8 @@ export const Route = createRootRoute({
   component: () => <Outlet />,
   notFoundComponent: () => (
     <main className="not-found">
-      <h1>页面不存在</h1>
-      <a href="/">返回工作台</a>
+      <h1>Page not found</h1>
+      <a href="/">Back to the workbench</a>
     </main>
   ),
 });

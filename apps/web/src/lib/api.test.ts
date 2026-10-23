@@ -15,7 +15,7 @@ afterEach(() => vi.unstubAllGlobals());
 
 it("parses UTF-8 and CRLF frames split at every byte, ignoring comments and incomplete frames", async () => {
   const bytes = new TextEncoder().encode(
-    ': heartbeat\r\nid: 9\r\nevent: log\r\ndata: {"text":"你好"}\r\n\r\nevent: status\ndata: first\ndata: second\n\ndata: unfinished',
+    ': heartbeat\r\nid: 9\r\nevent: log\r\ndata: {"text":"café"}\r\n\r\nevent: status\ndata: first\ndata: second\n\ndata: unfinished',
   );
   const received: unknown[] = [];
   await readEvents(
@@ -28,7 +28,7 @@ it("parses UTF-8 and CRLF frames split at every byte, ignoring comments and inco
     (event) => received.push(event),
   );
   expect(received).toEqual([
-    { type: "log", id: "9", data: '{"text":"你好"}' },
+    { type: "log", id: "9", data: '{"text":"café"}' },
     { type: "status", id: "", data: "first\nsecond" },
   ]);
 });
@@ -78,7 +78,7 @@ it("calls the configured origin with the bearer token and reports API failures",
   await expect(
     api({ baseUrl: "http://127.0.0.1:8088", token: "secret" }, "/v1/agents"),
   ).rejects.toMatchObject({
-    message: "无法连接 makez 服务，请检查地址后重试",
+    message: "Cannot reach the makez server. Check the address and try again.",
     status: 0,
   });
 

@@ -124,13 +124,13 @@ func TestCodexDecodeReplaysJSONLAndBoundsEscapedLogs(t *testing.T) {
 
 func TestCodexDecodeKeepsUTF8AtFragmentBoundary(t *testing.T) {
 	a := codexForTest(t)
-	data := append([]byte(strings.Repeat("a", codexFragmentBytes-2)), 0xe4, 0xbd)
+	data := append([]byte(strings.Repeat("a", codexFragmentBytes-2)), 0xe2, 0x82)
 	first, err := a.Decode(core.OutputPage{Records: []core.OutputRecord{{Offset: "0", Stream: "stderr", Data: data}}}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	second, err := a.Decode(core.OutputPage{Records: []core.OutputRecord{{Offset: "next", Stream: "stderr", Data: []byte{0xa0, '\n'}}}, EOF: true}, first.NextState)
-	if err != nil || len(second.Events) != 1 || !strings.Contains(string(second.Events[0].Payload), "你") {
+	second, err := a.Decode(core.OutputPage{Records: []core.OutputRecord{{Offset: "next", Stream: "stderr", Data: []byte{0xac, '\n'}}}, EOF: true}, first.NextState)
+	if err != nil || len(second.Events) != 1 || !strings.Contains(string(second.Events[0].Payload), "€") {
 		t.Fatalf("split UTF8 was damaged: %#v %v", second, err)
 	}
 }

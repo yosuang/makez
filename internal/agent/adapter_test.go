@@ -93,11 +93,11 @@ func TestPlanCannotInjectCommand(t *testing.T) {
 
 func TestDecodeUTF8AcrossPagesAndReplay(t *testing.T) {
 	a := NewDemo()
-	first, err := a.Decode(core.OutputPage{Records: []core.OutputRecord{{Offset: "0", Stream: "stdout", Data: []byte{'a', 0xe4, 0xbd}}}, NextCursor: "3"}, nil)
+	first, err := a.Decode(core.OutputPage{Records: []core.OutputRecord{{Offset: "0", Stream: "stdout", Data: []byte{'a', 0xe2, 0x82}}}, NextCursor: "3"}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	page := core.OutputPage{Records: []core.OutputRecord{{Offset: "3", Stream: "stdout", Data: []byte{0xa0, 'b', 0xe5}}}, NextCursor: "6"}
+	page := core.OutputPage{Records: []core.OutputRecord{{Offset: "3", Stream: "stdout", Data: []byte{0xac, 'b', 0xe2}}}, NextCursor: "6"}
 	second, err := a.Decode(page, first.NextState)
 	if err != nil {
 		t.Fatal(err)
@@ -120,16 +120,16 @@ func TestDecodeUTF8AcrossPagesAndReplay(t *testing.T) {
 			output += log["text"]
 		}
 	}
-	if output != "a你b�" {
+	if output != "a€b�" {
 		t.Fatalf("decoded %q", output)
 	}
 }
 
 func TestDecodeUTF8SplitInsideFinalPage(t *testing.T) {
 	output, err := NewDemo().Decode(core.OutputPage{Records: []core.OutputRecord{
-		{Offset: "0", Stream: "stdout", Data: []byte{0xe4, 0xbd}}, {Offset: "2", Stream: "stdout", Data: []byte{0xa0}},
+		{Offset: "0", Stream: "stdout", Data: []byte{0xe2, 0x82}}, {Offset: "2", Stream: "stdout", Data: []byte{0xac}},
 	}, NextCursor: "3", EOF: true}, nil)
-	if err != nil || len(output.Events) != 1 || !strings.Contains(string(output.Events[0].Payload), "你") {
+	if err != nil || len(output.Events) != 1 || !strings.Contains(string(output.Events[0].Payload), "€") {
 		t.Fatalf("bad UTF8 output: %#v, %v", output, err)
 	}
 }
