@@ -1,7 +1,7 @@
 {
   // Workers static assets for the Vite SPA. No Worker script and no API proxy.
   // Paths that are not files in ./dist are served index.html.
-  "name": "makez",
+  "name": "makez-web",
   "compatibility_date": "2026-10-23",
   "assets": {
     "directory": "./dist",
