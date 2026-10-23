@@ -44,7 +44,7 @@ type workspaceKey struct{}
 func (s *Server) Handler() http.Handler {
 	e := echo.NewWithConfig(echo.Config{Logger: slog.Default(), Router: echo.NewRouter(echo.RouterConfig{AutoHandleHEAD: true, OptionsMethodHandler: func(_ *echo.Context) error { return echo.ErrMethodNotAllowed }, UseEscapedPathForMatching: true, UnescapePathParamValues: true})})
 	e.HTTPErrorHandler = s.handleError
-	e.Use(s.observe, s.authorize)
+	e.Use(s.observe, allowBrowser, s.authorize)
 	e.GET("/healthz", func(c *echo.Context) error { return c.String(200, "ok") })
 	e.GET("/readyz", s.ready)
 	s.registerDocs(e)

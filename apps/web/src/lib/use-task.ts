@@ -9,7 +9,7 @@ import {
   type Task,
 } from "./api";
 
-export function useTask(token: string, id: string) {
+export function useTask(baseUrl: string, token: string, id: string) {
   const [task, setTask] = useState<Task>();
   const [events, setEvents] = useState<RunEvent[]>([]);
   const [artifacts, setArtifacts] = useState<Artifact[]>([]);
@@ -31,9 +31,10 @@ export function useTask(token: string, id: string) {
 
     async function refresh() {
       try {
-        const current: Task = await (await api(token, `/v1/tasks/${id}`, options)).json();
+        const auth = { baseUrl, token };
+        const current: Task = await (await api(auth, `/v1/tasks/${id}`, options)).json();
         const files: Artifact[] = await (
-          await api(token, `/v1/tasks/${id}/artifacts`, options)
+          await api(auth, `/v1/tasks/${id}/artifacts`, options)
         ).json();
         if (controller.signal.aborted) return;
         setTask(current);
@@ -50,7 +51,7 @@ export function useTask(token: string, id: string) {
     async function observe() {
       try {
         setStreamState(cursor === "0" ? "正在连接" : "正在重连");
-        const response = await api(token, `/v1/tasks/${id}/events`, {
+        const response = await api({ baseUrl, token }, `/v1/tasks/${id}/events`, {
           ...options,
           headers: { "Last-Event-ID": cursor },
         });
@@ -81,7 +82,7 @@ export function useTask(token: string, id: string) {
         if (ended) {
           setStreamState("日志已同步");
           const files: Artifact[] = await (
-            await api(token, `/v1/tasks/${id}/artifacts`, options)
+            await api({ baseUrl, token }, `/v1/tasks/${id}/artifacts`, options)
           ).json();
           if (!controller.signal.aborted) setArtifacts(files);
           return;
@@ -106,7 +107,7 @@ export function useTask(token: string, id: string) {
       clearTimeout(reconnect);
       clearTimeout(poll);
     };
-  }, [token, id]);
+  }, [baseUrl, token, id]);
 
   return { task, events, artifacts, error, streamState, setTask };
 }

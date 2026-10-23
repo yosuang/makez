@@ -1,5 +1,5 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { useEffect, useRef, useState, type FormEvent } from "react";
+import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
 import {
   ArrowDown,
   ArrowDownToLine,
@@ -27,7 +27,17 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@makez/ui/components/dialog";
-import { api, eventText, terminal, type Agent, type Artifact, type Task } from "@/lib/api";
+import {
+  api,
+  defaultAPIBaseURL,
+  eventText,
+  readConnection,
+  terminal,
+  writeConnection,
+  type Agent,
+  type Artifact,
+  type Task,
+} from "@/lib/api";
 import { useTask } from "@/lib/use-task";
 
 export const Route = createFileRoute("/")({ component: Console });
@@ -69,14 +79,47 @@ function Status({ state }: { state: string }) {
 }
 
 function Console() {
-  const [session, setSession] = useState<{ token: string; agents: Agent[] }>();
+  const stored = useRef(readConnection());
+  const [session, setSession] = useState<{ baseUrl: string; token: string; agents: Agent[] }>();
   const [draft, setDraft] = useState("");
   const [connectOpen, setConnectOpen] = useState(false);
-  const [key, setKey] = useState("");
+  const [server, setServer] = useState(stored.current.baseUrl);
+  const [key, setKey] = useState(stored.current.token);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const connection = useRef<AbortController | null>(null);
-  useEffect(() => () => connection.current?.abort(), []);
+
+  const connectTo = useCallback(async (baseUrl: string, token: string, signal: AbortSignal) => {
+    const agents: Agent[] | null = await (
+      await api({ baseUrl, token }, "/v1/agents", { signal })
+    ).json();
+    if (signal.aborted) return;
+    writeConnection({ baseUrl, token });
+    setSession({ baseUrl, token, agents: agents ?? [] });
+    setConnectOpen(false);
+  }, []);
+
+  useEffect(() => {
+    const token = stored.current.token.trim();
+    const baseUrl = stored.current.baseUrl.trim();
+    if (!token || !baseUrl) return;
+    const controller = new AbortController();
+    connection.current = controller;
+    setBusy(true);
+    void (async () => {
+      try {
+        await connectTo(baseUrl, token, controller.signal);
+      } catch (err) {
+        if (!controller.signal.aborted) {
+          setError(message(err));
+          setConnectOpen(true);
+        }
+      } finally {
+        if (!controller.signal.aborted) setBusy(false);
+      }
+    })();
+    return () => controller.abort();
+  }, [connectTo]);
 
   async function connect(event: FormEvent) {
     event.preventDefault();
@@ -86,13 +129,7 @@ function Console() {
     setBusy(true);
     setError("");
     try {
-      const agents: Agent[] | null = await (
-        await api(key.trim(), "/v1/agents", { signal: controller.signal })
-      ).json();
-      if (controller.signal.aborted) return;
-      setSession({ token: key.trim(), agents: agents ?? [] });
-      setKey("");
-      setConnectOpen(false);
+      await connectTo(server.trim(), key.trim(), controller.signal);
     } catch (err) {
       if (!controller.signal.aborted) setError(message(err));
     } finally {
@@ -103,7 +140,8 @@ function Console() {
   return (
     <>
       <Workspace
-        key={session?.token ?? "disconnected"}
+        key={session ? `${session.baseUrl}\0${session.token}` : "disconnected"}
+        baseUrl={session?.baseUrl ?? ""}
         token={session?.token ?? ""}
         agents={session?.agents ?? []}
         draft={draft}
@@ -112,7 +150,11 @@ function Console() {
           setError("");
           setConnectOpen(true);
         }}
-        onDisconnect={() => setSession(undefined)}
+        onDisconnect={() => {
+          writeConnection({ baseUrl: session?.baseUrl || server.trim(), token: "" });
+          setKey("");
+          setSession(undefined);
+        }}
       />
       <Dialog
         open={connectOpen}
@@ -121,7 +163,6 @@ function Console() {
           if (!open) {
             connection.current?.abort();
             setBusy(false);
-            setKey("");
           }
         }}
       >
@@ -129,10 +170,22 @@ function Console() {
           <DialogHeader>
             <DialogTitle>连接工作区</DialogTitle>
             <DialogDescription>
-              使用 Go 服务提供的工作区 API Key。密钥只保留在当前页面内存中，刷新后需要重新连接。
+              填写 makez 服务地址和工作区 API Key。连接成功后保存在此浏览器，请求直接发往该服务。
             </DialogDescription>
           </DialogHeader>
           <form onSubmit={connect} className="connect-form">
+            <label htmlFor="server-url">makez 服务地址</label>
+            <Input
+              id="server-url"
+              type="url"
+              inputMode="url"
+              autoComplete="off"
+              spellCheck={false}
+              placeholder={defaultAPIBaseURL}
+              value={server}
+              onChange={(event) => setServer(event.target.value)}
+              required
+            />
             <label htmlFor="workspace-key">工作区 API Key</label>
             <Input
               id="workspace-key"
@@ -149,7 +202,7 @@ function Console() {
                 {error}
               </p>
             )}
-            <Button type="submit" disabled={busy || !key.trim()}>
+            <Button type="submit" disabled={busy || !server.trim() || !key.trim()}>
               {busy && <LoaderCircle className="spin" />}连接工作区
             </Button>
           </form>
@@ -162,6 +215,7 @@ function Console() {
 type DraftProps = { draft: string; onDraftChange: (value: string) => void };
 
 function Workspace({
+  baseUrl,
   token,
   agents,
   onConnect,
@@ -169,6 +223,7 @@ function Workspace({
   draft,
   onDraftChange,
 }: DraftProps & {
+  baseUrl: string;
   token: string;
   agents: Agent[];
   onConnect: () => void;
@@ -184,7 +239,7 @@ function Workspace({
   const [loading, setLoading] = useState(Boolean(token));
   const [canceling, setCanceling] = useState(false);
   const [downloading, setDownloading] = useState("");
-  const { task, events, artifacts, error, streamState, setTask } = useTask(token, active);
+  const { task, events, artifacts, error, streamState, setTask } = useTask(baseUrl, token, active);
   const logs = useRef<HTMLDivElement>(null);
   const follow = useRef(true);
   const [autoScroll, setAutoScroll] = useState(true);
@@ -196,7 +251,7 @@ function Workspace({
     async function refresh() {
       try {
         const data: Task[] = await (
-          await api(token, "/v1/tasks", { signal: controller.signal })
+          await api({ baseUrl, token }, "/v1/tasks", { signal: controller.signal })
         ).json();
         if (!controller.signal.aborted) {
           setTasks(data);
@@ -216,7 +271,7 @@ function Workspace({
       controller.abort();
       clearTimeout(timer);
     };
-  }, [token]);
+  }, [baseUrl, token]);
 
   useEffect(() => {
     if (follow.current && logs.current) logs.current.scrollTop = logs.current.scrollHeight;
@@ -237,7 +292,7 @@ function Workspace({
     setActionError("");
     try {
       const updated: Task = await (
-        await api(token, `/v1/tasks/${active}/cancel`, { method: "POST" })
+        await api({ baseUrl, token }, `/v1/tasks/${active}/cancel`, { method: "POST" })
       ).json();
       if (activeRef.current === active) setTask(updated);
     } catch (err) {
@@ -251,7 +306,7 @@ function Workspace({
     setDownloading(file.id);
     setActionError("");
     try {
-      const blob = await (await api(token, `/v1/artifacts/${file.id}/content`)).blob();
+      const blob = await (await api({ baseUrl, token }, `/v1/artifacts/${file.id}/content`)).blob();
       const url = URL.createObjectURL(blob);
       const link = document.createElement("a");
       link.href = url;
@@ -343,7 +398,7 @@ function Workspace({
             <span className={`connection-dot ${token ? "connected" : ""}`} />
             <div>
               <strong>{token ? "工作区已连接" : "尚未连接工作区"}</strong>
-              <span>{token ? "任务由后端持续执行" : "使用 API Key 开始"}</span>
+              <span>{token ? serverHost(baseUrl) : "填写服务地址和 API Key"}</span>
             </div>
           </div>
           {token ? (
@@ -579,6 +634,7 @@ function Workspace({
           <NewTask
             draft={draft}
             onDraftChange={onDraftChange}
+            baseUrl={baseUrl}
             token={token}
             agents={agents}
             onConnect={onConnect}
@@ -597,7 +653,16 @@ function Workspace({
   );
 }
 
+function serverHost(baseUrl: string) {
+  try {
+    return new URL(baseUrl).host;
+  } catch {
+    return baseUrl;
+  }
+}
+
 function NewTask({
+  baseUrl,
   token,
   agents,
   onConnect,
@@ -605,6 +670,7 @@ function NewTask({
   draft: prompt,
   onDraftChange: setPrompt,
 }: DraftProps & {
+  baseUrl: string;
   token: string;
   agents: Agent[];
   onConnect: () => void;
@@ -642,7 +708,7 @@ function NewTask({
     setError("");
     try {
       const task = (await (
-        await api(token, "/v1/tasks", {
+        await api({ baseUrl, token }, "/v1/tasks", {
           method: "POST",
           body,
           headers: { "Idempotency-Key": attempt.current.key },

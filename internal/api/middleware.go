@@ -18,6 +18,23 @@ import (
 	"go.opentelemetry.io/otel/metric"
 )
 
+// allowBrowser lets a static page on another origin call this API with a bearer token.
+// The token is not a cookie, so any origin may call; browsers still will not attach it automatically.
+func allowBrowser(next echo.HandlerFunc) echo.HandlerFunc {
+	return func(c *echo.Context) error {
+		h := c.Response().Header()
+		h.Set("Access-Control-Allow-Origin", "*")
+		h.Set("Access-Control-Allow-Methods", "GET, HEAD, POST, OPTIONS")
+		h.Set("Access-Control-Allow-Headers", "Authorization, Content-Type, Idempotency-Key, Last-Event-ID")
+		h.Set("Access-Control-Expose-Headers", "Content-Disposition, Content-Type")
+		h.Set("Access-Control-Max-Age", "600")
+		if c.Request().Method == http.MethodOptions {
+			return c.NoContent(http.StatusNoContent)
+		}
+		return next(c)
+	}
+}
+
 func (s *Server) authorize(next echo.HandlerFunc) echo.HandlerFunc {
 	return func(c *echo.Context) error {
 		r := c.Request()

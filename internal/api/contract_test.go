@@ -32,7 +32,7 @@ func TestRoutesAndStrictInputWithoutDatabase(t *testing.T) {
 		status                    int
 	}{
 		{"GET", "/missing", "", "", 404}, {"GET", "/v1/missing", "", "", 401}, {"GET", "/v1/missing", "", "test-token", 404},
-		{"PUT", "/v1/tasks", "", "test-token", 405}, {"OPTIONS", "/v1/agents", "", "test-token", 405},
+		{"PUT", "/v1/tasks", "", "test-token", 405}, {"OPTIONS", "/v1/agents", "", "", 204},
 		{"GET", "/v1/agents/", "", "test-token", 404}, {"HEAD", "/v1/agents", "", "test-token", 200},
 		{"POST", "/v1/tasks", `{"prompt":"x","unknown":1}`, "test-token", 400},
 		{"POST", "/v1/tasks", `{"prompt":"x"} {}`, "test-token", 400},
@@ -53,6 +53,17 @@ func TestRoutesAndStrictInputWithoutDatabase(t *testing.T) {
 			}
 			if rec.Header().Get("X-Request-ID") != "contract-123" || rec.Header().Get("X-Content-Type-Options") != "nosniff" {
 				t.Fatal("missing shared headers")
+			}
+			if rec.Header().Get("Access-Control-Allow-Origin") != "*" {
+				t.Fatal("missing browser CORS origin")
+			}
+			if tc.method == http.MethodOptions {
+				allow := rec.Header().Get("Access-Control-Allow-Headers")
+				for _, header := range []string{"Authorization", "Content-Type", "Idempotency-Key", "Last-Event-ID"} {
+					if !strings.Contains(allow, header) {
+						t.Fatalf("preflight missing %s", header)
+					}
+				}
 			}
 			if tc.method == "HEAD" && rec.Body.Len() != 0 {
 				t.Fatal("HEAD included a body")
