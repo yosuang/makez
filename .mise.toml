@@ -25,7 +25,8 @@ run = [
 description = "Format Go code with golangci-lint"
 run = "golangci-lint fmt"
 
-# fmt --diff prints changes but does not fail when formatting is needed.
+# v2.15 exits non-zero when formatting is needed and still prints the patch.
+# Show that patch, then fail on a non-zero status or a non-empty patch.
 [tasks.fmt-check]
 description = "Fail when Go formatting would change files"
 run = '''
@@ -33,8 +34,14 @@ run = '''
 set -euo pipefail
 diff_out=$(mktemp)
 trap 'rm -f "$diff_out"' EXIT
+set +e
 golangci-lint fmt --diff > "$diff_out"
+status=$?
+set -e
 cat "$diff_out"
+if [[ "$status" -ne 0 ]]; then
+  exit "$status"
+fi
 test ! -s "$diff_out"
 '''
 
