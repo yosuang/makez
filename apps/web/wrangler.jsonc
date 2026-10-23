@@ -1,7 +1,10 @@
 {
-  // Static Cloudflare Pages project. No Worker entry and no API proxy.
-  // Pages serves index.html for unknown paths when the output has no top-level 404.html.
-  "name": "makez-web",
-  "pages_build_output_dir": "./dist",
+  // Workers static assets for the Vite SPA. No Worker script and no API proxy.
+  // Paths that are not files in ./dist are served index.html.
+  "name": "makez",
   "compatibility_date": "2026-10-23",
+  "assets": {
+    "directory": "./dist",
+    "not_found_handling": "single-page-application",
+  },
 }

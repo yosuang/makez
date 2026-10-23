@@ -4,7 +4,7 @@ import react from "@vitejs/plugin-react";
 import { defineConfig } from "vite-plus";
 
 export default defineConfig({
-  // Dev and preview history fallback. Cloudflare Pages does the same when dist has no 404.html.
+  // Dev and preview history fallback. Production uses assets.not_found_handling in wrangler.jsonc.
   appType: "spa",
   server: { host: "127.0.0.1", port: 3000, strictPort: true },
   preview: { host: "127.0.0.1", port: 4173, strictPort: true },
