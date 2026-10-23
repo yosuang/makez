@@ -28,6 +28,9 @@ fi
 # shellcheck disable=SC1091
 source .local/env
 
+# Enable development features unless the shell or .local/env explicitly sets a mode.
+export MAKEZ_ENV="${MAKEZ_ENV-development}"
+
 if [[ -n "${MAKEZ_CODEX_AGENT:-}" ]]; then
   export MAKEZ_RUNTIME_IMAGE="${MAKEZ_RUNTIME_IMAGE:-makez-runtime-codex:0.1}"
 else
