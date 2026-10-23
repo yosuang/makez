@@ -1,6 +1,6 @@
 name: makez
 
-# Development dependencies only; Makez and Web run on the host via make dev.
+# Development dependencies only; Makez and Web run on the host via mise run dev.
 # All database passwords are development-only fixtures.
 services:
   postgres:
@@ -95,7 +95,7 @@ services:
       postgres:
         condition: service_healthy
     environment:
-      OPENSANDBOX_SERVER_API_KEY: ${MAKEZ_SANDBOX_API_KEY:?Run make dev once, then source .local/env}
+      OPENSANDBOX_SERVER_API_KEY: ${MAKEZ_SANDBOX_API_KEY:?Run mise run dev once, then source .local/env}
       OPENSANDBOX_STORE_POSTGRESQL_DSN: postgresql://opensandbox:opensandbox-local@postgres:5432/opensandbox?sslmode=disable
     ports:
       - "127.0.0.1:18080:8080"

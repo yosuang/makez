@@ -1,0 +1,62 @@
+# Toolchain versions and project tasks.
+# Keep the Go pin equal to the go directive in go.mod.
+
+[tools]
+go = "1.27.2"
+"golangci-lint" = "2.15.0"
+
+[tasks.dev]
+description = "Start the local API, web app, and infrastructure"
+run = "./scripts/dev.sh"
+raw = true
+
+[tasks.clean]
+description = "Remove local build outputs"
+run = "go run ./build clean"
+
+[tasks.lint]
+description = "Verify the golangci-lint config and lint the module"
+run = [
+  "golangci-lint config verify",
+  "golangci-lint run",
+]
+
+[tasks.fmt]
+description = "Format Go code with golangci-lint"
+run = "golangci-lint fmt"
+
+# v2.15 exits non-zero when formatting is needed and still prints the patch.
+# Show that patch, then fail on a non-zero status or a non-empty patch.
+[tasks.fmt-check]
+description = "Fail when Go formatting would change files"
+run = '''
+#!/usr/bin/env bash
+set -euo pipefail
+diff_out=$(mktemp)
+trap 'rm -f "$diff_out"' EXIT
+set +e
+golangci-lint fmt --diff > "$diff_out"
+status=$?
+set -e
+cat "$diff_out"
+if [[ "$status" -ne 0 ]]; then
+  exit "$status"
+fi
+test ! -s "$diff_out"
+'''
+
+# Pin the generator independently of runtime packages; output has no timestamp.
+[tasks.swagger]
+description = "Regenerate OpenAPI docs"
+run = "go run github.com/swaggo/swag/cmd/swag@v1.16.6 init -g internal/api/server.go --parseInternal --packageName docs --propertyStrategy pascalcase --output internal/api/docs --outputTypes go,json,yaml"
+
+[tasks.swagger-check]
+description = "Fail when generated OpenAPI docs are stale"
+run = '''
+#!/usr/bin/env bash
+set -euo pipefail
+tmp=$(mktemp -d)
+trap 'rm -rf "$tmp"' EXIT
+go run github.com/swaggo/swag/cmd/swag@v1.16.6 init -g internal/api/server.go --parseInternal --packageName docs --propertyStrategy pascalcase --output "$tmp" --outputTypes go,json,yaml
+diff -ru internal/api/docs "$tmp"
+'''
