@@ -6,8 +6,7 @@
     "dev": "vp dev",
     "build": "vp build",
     "preview": "vp preview",
-    "check": "vp check && tsc --noEmit",
-    "test": "vp test run"
+    "check": "vp check && tsc --noEmit"
   },
   "dependencies": {
     "@makez/ui": "workspace:*",

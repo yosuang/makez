@@ -9,7 +9,6 @@
     "dev": "pnpm --dir apps/web dev",
     "build": "pnpm --dir apps/web build",
     "preview": "pnpm --dir apps/web preview",
-    "check": "pnpm --dir packages/ui exec tsc --noEmit && pnpm --dir apps/web check",
-    "test": "pnpm --dir apps/web test"
+    "check": "pnpm --dir packages/ui exec tsc --noEmit && pnpm --dir apps/web check"
   }
 }
