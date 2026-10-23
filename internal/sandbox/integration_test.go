@@ -115,7 +115,9 @@ time.sleep(0.2)
 		t.Fatal(err)
 	}
 	data, err := io.ReadAll(reader)
-	reader.Close()
+	if err := reader.Close(); err != nil {
+		t.Error(err)
+	}
 	if err != nil || string(data) != "verified result" {
 		t.Fatalf("artifact %q %v", data, err)
 	}

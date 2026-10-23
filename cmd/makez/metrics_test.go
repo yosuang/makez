@@ -30,7 +30,7 @@ func clearMetricsEnvironment(t *testing.T) {
 func TestMetricsDisabledByDefaultAndExplicitOptOut(t *testing.T) {
 	clearMetricsEnvironment(t)
 	var requests atomic.Int64
-	receiver := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { requests.Add(1) }))
+	receiver := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { requests.Add(1) }))
 	defer receiver.Close()
 	for _, mode := range []string{"unconfigured", "none", "sdk-disabled", "otlp-without-endpoint"} {
 		t.Run(mode, func(t *testing.T) {
@@ -190,7 +190,7 @@ func TestPeriodicExportDoesNotBlockRecordingAndShutdownIsBounded(t *testing.T) {
 	clearMetricsEnvironment(t)
 	entered := make(chan string, 1)
 	release := make(chan struct{})
-	receiver := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	receiver := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
 		select {
 		case entered <- r.URL.Path:
 		default:

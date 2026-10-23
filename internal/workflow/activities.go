@@ -21,6 +21,7 @@ import (
 	"go.temporal.io/sdk/temporal"
 )
 
+// Activities provides the external dependencies used by workflow activities.
 type Activities struct {
 	DB        *store.Store
 	Provider  core.SandboxProvider
@@ -90,6 +91,8 @@ func active(t store.Task) error {
 func terminal(t core.TaskState) bool {
 	return t == core.TaskSucceeded || t == core.TaskFailed || t == core.TaskCanceled
 }
+
+// Initialize loads or creates a run and returns its execution deadline.
 func (a *Activities) Initialize(ctx context.Context, in Input) (Initialized, error) {
 	t, e := a.DB.InitializeRun(ctx, in.WorkspaceID, in.TaskID, a.Provider.BackendID())
 	if e != nil {
@@ -97,6 +100,8 @@ func (a *Activities) Initialize(ctx context.Context, in Input) (Initialized, err
 	}
 	return Initialized{Done: terminal(t.State), Deadline: t.Deadline}, nil
 }
+
+// Prepare resolves the execution plan and reconciles sandbox creation.
 func (a *Activities) Prepare(ctx context.Context, in Input) error {
 	t, e := a.task(ctx, in)
 	if e != nil {
@@ -185,6 +190,8 @@ func (a *Activities) Prepare(ctx context.Context, in Input) error {
 	}
 	return a.DB.UpdateRun(ctx, t.Run.ID, store.RunUpdate{State: ptr(core.RunStarting)})
 }
+
+// Launch reconciles the keyed process launch and persists its receipt.
 func (a *Activities) Launch(ctx context.Context, in Input) error {
 	t, e := a.task(ctx, in)
 	if e != nil {
@@ -250,6 +257,8 @@ func (a *Activities) Launch(ctx context.Context, in Input) error {
 	}
 	return a.DB.ConfirmOperation(ctx, t.Run.ID, "agent")
 }
+
+// Observe streams process output into durable events until execution finishes.
 func (a *Activities) Observe(ctx context.Context, in Input) error {
 	t, e := a.task(ctx, in)
 	if e != nil {
@@ -319,6 +328,8 @@ type reader struct {
 func (r reader) Read(ctx context.Context, p string) (io.ReadCloser, error) {
 	return r.p.ReadFile(ctx, r.s, p)
 }
+
+// Finalize stops execution, archives results, cleans up, and publishes the outcome.
 func (a *Activities) Finalize(ctx context.Context, in FinishInput) error {
 	t, e := a.task(ctx, in.Input)
 	if e != nil {
@@ -475,6 +486,8 @@ func (a *Activities) Finalize(ctx context.Context, in FinishInput) error {
 	}
 	return a.DB.Publish(ctx, in.WorkspaceID, in.TaskID, state, reason, verified, cleanup, artifacts)
 }
+
+// Reap retries deletion of a run’s sandbox resource.
 func (a *Activities) Reap(ctx context.Context, in Input) error {
 	t, e := a.task(ctx, in)
 	if e != nil {
@@ -488,6 +501,8 @@ func (a *Activities) Reap(ctx context.Context, in Input) error {
 	}
 	return a.DB.SetCleanup(ctx, t.Run.ID, core.CleanupDone)
 }
+
+// BlockCleanup records that automatic cleanup could not complete.
 func (a *Activities) BlockCleanup(ctx context.Context, in Input) error {
 	t, e := a.task(ctx, in)
 	if e != nil {

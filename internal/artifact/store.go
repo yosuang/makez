@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"log/slog"
 	"os"
 	"path"
 	"strings"
@@ -17,12 +18,14 @@ import (
 	"github.com/makez-dev/makez/internal/core"
 )
 
+// Limits on individual files and the combined artifacts of a run.
 const (
 	MaxFileBytes  = 16 << 20
 	MaxTotalBytes = 64 << 20
 	MaxFiles      = 64
 )
 
+// Record describes an immutable file archived from a run.
 type Record struct {
 	LogicalPath string
 	StorageKey  string
@@ -32,8 +35,10 @@ type Record struct {
 	Required    bool
 }
 
+// Store confines artifact access to an opened storage root.
 type Store struct{ root *os.Root }
 
+// New opens or creates the artifact storage directory.
 func New(directory string) (*Store, error) {
 	if err := os.MkdirAll(directory, 0700); err != nil {
 		return nil, err
@@ -45,6 +50,7 @@ func New(directory string) (*Store, error) {
 	return &Store{root: r}, nil
 }
 
+// Close releases the storage root descriptor.
 func (s *Store) Close() error { return s.root.Close() }
 
 // ValidatePath accepts relative result paths or explicit /workspace paths.
@@ -53,9 +59,7 @@ func ValidatePath(value string) (string, error) {
 	if value == "" || len(value) > 512 || strings.ContainsAny(value, "\\\x00\r\n") {
 		return "", fmt.Errorf("invalid artifact path")
 	}
-	if strings.HasPrefix(value, "/workspace/") {
-		value = strings.TrimPrefix(value, "/workspace/")
-	}
+	value = strings.TrimPrefix(value, "/workspace/")
 	if strings.HasPrefix(value, "/") {
 		return "", fmt.Errorf("artifact path must be inside /workspace")
 	}
@@ -72,13 +76,14 @@ func validRunID(value string) bool {
 		return false
 	}
 	for _, c := range value {
-		if !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '-' || c == '_') {
+		if (c < 'a' || c > 'z') && (c < 'A' || c > 'Z') && (c < '0' || c > '9') && c != '-' && c != '_' {
 			return false
 		}
 	}
 	return true
 }
 
+// Open opens a validated artifact storage key for reading.
 func (s *Store) Open(key string) (io.ReadCloser, error) {
 	parts := strings.Split(key, "/")
 	if len(parts) != 2 || !validRunID(parts[0]) || len(parts[1]) != 64 {
@@ -93,7 +98,7 @@ func (s *Store) Open(key string) (io.ReadCloser, error) {
 	}
 	info, err := f.Stat()
 	if err != nil || !info.Mode().IsRegular() || info.Size() > MaxFileBytes {
-		f.Close()
+		f.Close() //nolint:errcheck // Discard the invalid read-only artifact without replacing its validation error.
 		if err != nil {
 			return nil, err
 		}
@@ -102,6 +107,7 @@ func (s *Store) Open(key string) (io.ReadCloser, error) {
 	return f, nil
 }
 
+// Archive copies candidate files into immutable storage within size limits.
 func (s *Store) Archive(ctx context.Context, runID string, reader core.WorkspaceReader, candidates []core.ArtifactCandidate) ([]Record, error) {
 	if !validRunID(runID) {
 		return nil, fmt.Errorf("invalid run ID")
@@ -162,7 +168,11 @@ func (s *Store) archiveOne(ctx context.Context, runID, logicalPath string, input
 	if err != nil {
 		return Record{}, err
 	}
-	defer s.root.Remove(temp)
+	defer func() {
+		if err := s.root.Remove(temp); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			slog.Warn("cannot remove temporary artifact file")
+		}
+	}()
 	hash := sha256.New()
 	n, copyErr := io.Copy(io.MultiWriter(f, hash), io.LimitReader(contextReader{ctx, input}, limit+1))
 	if copyErr == nil && n > limit {

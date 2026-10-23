@@ -33,13 +33,15 @@ func TestUnknownCreateIsNeverRepeated(t *testing.T) {
 		if r.Header.Get("OPEN-SANDBOX-API-KEY") != "api-key" {
 			t.Error("missing auth")
 		}
-		if r.Method == "POST" {
+		if r.Method == http.MethodPost {
 			creates++
-			w.WriteHeader(503)
+			w.WriteHeader(http.StatusServiceUnavailable)
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`{"items":[],"pagination":{"hasNextPage":false}}`))
+		if _, err := w.Write([]byte(`{"items":[],"pagination":{"hasNextPage":false}}`)); err != nil {
+			t.Error(err)
+		}
 	})
 	req := testRequest()
 	for range 2 {
@@ -61,33 +63,45 @@ func TestConcurrentEnsureAndConflictingRequest(t *testing.T) {
 		if r.URL.Path == "/process" {
 			readinessChecks++
 			if readinessChecks < 3 {
-				w.WriteHeader(502)
+				w.WriteHeader(http.StatusBadGateway)
 				return
 			}
-			json.NewEncoder(w).Encode(map[string]any{"data": map[string]string{"State": "NOT_STARTED"}})
+			if err := json.NewEncoder(w).Encode(map[string]any{"data": map[string]string{"State": "NOT_STARTED"}}); err != nil {
+				t.Error(err)
+			}
 			return
 		}
 		if strings.HasSuffix(r.URL.Path, "/endpoints/8099") {
-			json.NewEncoder(w).Encode(map[string]string{"endpoint": strings.TrimSuffix(p.cfg.BaseURL, "/v1")})
+			if err := json.NewEncoder(w).Encode(map[string]string{"endpoint": strings.TrimSuffix(p.cfg.BaseURL, "/v1")}); err != nil {
+				t.Error(err)
+			}
 			return
 		}
 		if r.URL.Path == "/v1/sandboxes/sandbox" {
-			json.NewEncoder(w).Encode(rows[0])
+			if err := json.NewEncoder(w).Encode(rows[0]); err != nil {
+				t.Error(err)
+			}
 			return
 		}
-		if r.Method == "POST" {
+		if r.Method == http.MethodPost {
 			creates++
 			var body struct {
 				Metadata map[string]string `json:"metadata"`
 			}
-			json.NewDecoder(r.Body).Decode(&body)
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Error(err)
+			}
 			item := resource{ID: "sandbox", Metadata: body.Metadata}
 			item.Status.State = "Running"
 			rows = append(rows, item)
-			json.NewEncoder(w).Encode(item)
+			if err := json.NewEncoder(w).Encode(item); err != nil {
+				t.Error(err)
+			}
 			return
 		}
-		json.NewEncoder(w).Encode(map[string]any{"items": rows, "pagination": map[string]bool{"hasNextPage": false}})
+		if err := json.NewEncoder(w).Encode(map[string]any{"items": rows, "pagination": map[string]bool{"hasNextPage": false}}); err != nil {
+			t.Error(err)
+		}
 	})
 	request := testRequest()
 	var wg sync.WaitGroup
@@ -114,8 +128,10 @@ func TestConcurrentEnsureAndConflictingRequest(t *testing.T) {
 }
 func TestInspectRejectsUnownedRowsAndMultipleMatches(t *testing.T) {
 	var rows []resource
-	p := testProvider(t, func(w http.ResponseWriter, r *http.Request) {
-		json.NewEncoder(w).Encode(map[string]any{"items": rows, "pagination": map[string]bool{"hasNextPage": false}})
+	p := testProvider(t, func(w http.ResponseWriter, _ *http.Request) {
+		if err := json.NewEncoder(w).Encode(map[string]any{"items": rows, "pagination": map[string]bool{"hasNextPage": false}}); err != nil {
+			t.Error(err)
+		}
 	})
 	key := testRequest().Key
 	owned := resource{ID: "one", Metadata: p.labels(key)}
@@ -138,9 +154,9 @@ func TestDeleteWaitsForConfirmedAbsence(t *testing.T) {
 	lists := 0
 	key := testRequest().Key
 	p = testProvider(t, func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == "DELETE" {
+		if r.Method == http.MethodDelete {
 			deleted = true
-			w.WriteHeader(204)
+			w.WriteHeader(http.StatusNoContent)
 			return
 		}
 		lists++
@@ -150,7 +166,9 @@ func TestDeleteWaitsForConfirmedAbsence(t *testing.T) {
 			item.Status.State = "Stopping"
 			rows = append(rows, item)
 		}
-		json.NewEncoder(w).Encode(map[string]any{"items": rows, "pagination": map[string]bool{"hasNextPage": false}})
+		if err := json.NewEncoder(w).Encode(map[string]any{"items": rows, "pagination": map[string]bool{"hasNextPage": false}}); err != nil {
+			t.Error(err)
+		}
 	})
 	if err := p.Delete(context.Background(), key); err != nil {
 		t.Fatal(err)

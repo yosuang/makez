@@ -8,6 +8,7 @@ import (
 	"github.com/makez-dev/makez/internal/core"
 )
 
+// Persistence errors used by API and workflow callers.
 var (
 	ErrNotFound     = errors.New("not found")
 	ErrInvalidInput = errors.New("invalid input")
@@ -15,6 +16,7 @@ var (
 	ErrStale        = errors.New("stale observer")
 )
 
+// SubmitInput contains the task parameters persisted on submission.
 type SubmitInput struct {
 	Prompt         string          `json:"prompt"`
 	Config         json.RawMessage `json:"config,omitempty"`
@@ -26,6 +28,7 @@ type SubmitInput struct {
 	TimeoutSeconds int             `json:"timeout_seconds,omitempty"`
 }
 
+// Task contains a persisted task and its current run.
 type Task struct {
 	ID              string          `json:"id"`
 	WorkspaceID     string          `json:"workspace_id"`
@@ -44,6 +47,7 @@ type Task struct {
 	DispatchError   string          `json:"dispatch_error,omitempty"`
 }
 
+// Run contains execution state, checkpoints, and cleanup progress.
 type Run struct {
 	StartedAt       *time.Time        `json:"-"`
 	ID              string            `json:"id"`
@@ -62,6 +66,7 @@ type Run struct {
 	Plan            *core.AgentPlan   `json:"-"`
 }
 
+// RunUpdate describes the run fields to update atomically.
 type RunUpdate struct {
 	State           *core.RunState
 	Sandbox         *core.SandboxRef
@@ -74,6 +79,7 @@ type RunUpdate struct {
 	Result          *PreparedResult
 }
 
+// Artifact contains metadata and the private storage key of an archived file.
 type Artifact struct {
 	ID         string `json:"id"`
 	RunID      string `json:"run_id"`
@@ -84,6 +90,7 @@ type Artifact struct {
 	Size       int64  `json:"size"`
 }
 
+// Event contains a persisted event with its replay sequence number.
 type Event struct {
 	Seq       int64           `json:"seq"`
 	RunID     string          `json:"run_id"`
@@ -92,6 +99,7 @@ type Event struct {
 	CreatedAt time.Time       `json:"created_at"`
 }
 
+// Outbox contains a durable command awaiting workflow dispatch.
 type Outbox struct {
 	ID          string `json:"id"`
 	WorkspaceID string `json:"workspace_id"`
@@ -102,6 +110,7 @@ type Outbox struct {
 	LastError   string `json:"last_error"`
 }
 
+// IsTerminal reports whether a task has reached a final state.
 func IsTerminal(state core.TaskState) bool {
 	return state == core.TaskSucceeded || state == core.TaskFailed || state == core.TaskCanceled
 }
@@ -118,6 +127,7 @@ type storedArtifact struct {
 	StorageKey string `json:"storage_key"`
 }
 
+// MarshalJSON preserves private artifact storage keys in the durable result.
 func (r PreparedResult) MarshalJSON() ([]byte, error) {
 	artifacts := make([]storedArtifact, len(r.Artifacts))
 	for i, a := range r.Artifacts {
@@ -129,6 +139,8 @@ func (r PreparedResult) MarshalJSON() ([]byte, error) {
 		Artifacts []storedArtifact `json:"artifacts"`
 	}{r.State, r.Reason, artifacts})
 }
+
+// UnmarshalJSON restores the durable result, including private storage keys.
 func (r *PreparedResult) UnmarshalJSON(data []byte) error {
 	var stored struct {
 		State     core.TaskState   `json:"state"`

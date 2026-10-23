@@ -32,9 +32,10 @@ func TestCodexPlanUsesReferencesAndFixedCommand(t *testing.T) {
 				t.Fatal(err)
 			}
 			wantVariable := "CODEX_API_KEY"
-			if mode == "codex_access_token" {
+			switch mode {
+			case "codex_access_token":
 				wantVariable = "CODEX_ACCESS_TOKEN"
-			} else if mode == "chatgpt_session" {
+			case "chatgpt_session":
 				wantVariable = "CODEX_AUTH_JSON"
 			}
 			if !reflect.DeepEqual(plan.SecretRefs, map[string]string{wantVariable: "codex-key@1"}) || len(plan.Command.Env) != 0 {

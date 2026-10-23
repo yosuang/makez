@@ -26,13 +26,14 @@ type codex struct {
 
 var modelName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$`)
 
+// NewCodex validates configuration for the Codex CLI adapter.
 func NewCodex(config CodexConfig) (core.AgentAdapter, error) {
 	if config.AuthMode != "codex_access_token" && config.AuthMode != "api_key" && config.AuthMode != "chatgpt_session" {
-		return nil, fmt.Errorf("Codex auth mode must be codex_access_token, api_key, or chatgpt_session")
+		return nil, fmt.Errorf("codex auth mode must be codex_access_token, api_key, or chatgpt_session")
 	}
 	name, version, ok := strings.Cut(config.SecretRef, "@")
 	if !ok || name == "" || version == "" || len(config.SecretRef) > 256 || strings.ContainsAny(config.SecretRef, " \t\r\n\x00") || strings.Contains(version, "@") {
-		return nil, fmt.Errorf("Codex requires a versioned SecretRef (name@version)")
+		return nil, fmt.Errorf("codex requires a versioned SecretRef (name@version)")
 	}
 	if config.Model != "" && !modelName.MatchString(config.Model) {
 		return nil, fmt.Errorf("invalid Codex model name")
@@ -54,9 +55,10 @@ func (a *codex) Plan(input core.AgentInput) (core.AgentPlan, error) {
 		return plan, err
 	}
 	variable := "CODEX_ACCESS_TOKEN"
-	if a.config.AuthMode == "api_key" {
+	switch a.config.AuthMode {
+	case "api_key":
 		variable = "CODEX_API_KEY"
-	} else if a.config.AuthMode == "chatgpt_session" {
+	case "chatgpt_session":
 		variable = "CODEX_AUTH_JSON"
 	}
 	plan.SecretRefs = map[string]string{variable: a.config.SecretRef}
@@ -66,18 +68,18 @@ func (a *codex) Plan(input core.AgentInput) (core.AgentPlan, error) {
 
 func (a *codex) Collect(ctx context.Context, workspace core.WorkspaceReader, exit core.ProcessExit) (core.AgentResult, error) {
 	if exit.Code == 77 {
-		return core.AgentResult{}, fmt.Errorf("Codex credential was not injected; check the registered SecretRef")
+		return core.AgentResult{}, fmt.Errorf("codex credential was not injected; check the registered SecretRef")
 	}
 	result, err := a.base.Collect(ctx, workspace, exit)
 	if err != nil {
 		return result, err
 	}
 	if result.Succeeded && len(result.Artifacts) < 2 {
-		return core.AgentResult{}, fmt.Errorf("Codex reported success without a deliverable")
+		return core.AgentResult{}, fmt.Errorf("codex reported success without a deliverable")
 	}
 	for _, candidate := range result.Artifacts[1:] {
 		if !strings.HasPrefix(candidate.Path, "/workspace/deliverables/") || !candidate.Required {
-			return core.AgentResult{}, fmt.Errorf("Codex deliverables must be required files under /workspace/deliverables")
+			return core.AgentResult{}, fmt.Errorf("codex deliverables must be required files under /workspace/deliverables")
 		}
 	}
 	return result, nil
@@ -89,7 +91,7 @@ const codexFragmentBytes = 8 << 10
 func (a *codex) Decode(page core.OutputPage, previous []byte) (core.DecodedOutput, error) {
 	state := decoderState{Pending: map[string][]byte{}}
 	if len(previous) > 24<<10 {
-		return core.DecodedOutput{}, fmt.Errorf("Codex parser checkpoint too large")
+		return core.DecodedOutput{}, fmt.Errorf("codex parser checkpoint too large")
 	}
 	if len(previous) != 0 {
 		if err := decodeStrict(previous, &state); err != nil {
@@ -107,7 +109,7 @@ func (a *codex) Decode(page core.OutputPage, previous []byte) (core.DecodedOutpu
 	result := core.DecodedOutput{}
 	emit := func(stream, offset string, index uint32, data []byte) error {
 		if len(result.Events) >= 1024 {
-			return fmt.Errorf("Codex output contains too many events in one page")
+			return fmt.Errorf("codex output contains too many events in one page")
 		}
 		var event struct {
 			Type string `json:"type"`
@@ -135,7 +137,7 @@ func (a *codex) Decode(page core.OutputPage, previous []byte) (core.DecodedOutpu
 		}
 		total += len(record.Data)
 		if total > 1<<20 {
-			return result, fmt.Errorf("Codex output page exceeds parser limit")
+			return result, fmt.Errorf("codex output page exceeds parser limit")
 		}
 		pending := append(state.Pending[record.Stream], record.Data...)
 		var index uint32

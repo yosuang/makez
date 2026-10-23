@@ -48,6 +48,7 @@ func validateLaunch(r launchRequest) error {
 	return nil
 }
 
+// Start launches or reconciles a keyed execution in the agent workspace.
 func (s *Supervisor) Start(r launchRequest) (core.ProcessObservation, error) {
 	id, err := identity(r.Key)
 	if err != nil {
@@ -100,18 +101,18 @@ func (s *Supervisor) Start(r launchRequest) (core.ProcessObservation, error) {
 	if err != nil {
 		return core.ProcessObservation{}, err
 	}
-	defer stdoutWriter.Close()
+	defer stdoutWriter.Close() //nolint:errcheck // Release the parent copy; the child owns its inherited pipe descriptor.
 	stderr, stderrWriter, err := os.Pipe()
 	if err != nil {
-		stdout.Close()
+		stdout.Close() //nolint:errcheck // Discard the read end after process setup failed.
 		return core.ProcessObservation{}, err
 	}
-	defer stderrWriter.Close()
+	defer stderrWriter.Close() //nolint:errcheck // Release the parent copy; the child owns its inherited pipe descriptor.
 	cmd.Stdout, cmd.Stderr = stdoutWriter, stderrWriter
 	s.secrets[id] = literals
 	if err = startAgent(cmd); err != nil {
-		stdout.Close()
-		stderr.Close()
+		stdout.Close() //nolint:errcheck // Discard the read end after process setup failed.
+		stderr.Close() //nolint:errcheck // Discard the read end after process setup failed.
 		state.State, state.Closed = "STOPPED", true
 		if err = s.save(id, state); err != nil {
 			return core.ProcessObservation{}, err
@@ -183,6 +184,7 @@ func signalName(signal syscall.Signal) string {
 	}
 }
 
+// Stop closes a launch key and terminates its process group.
 func (s *Supervisor) Stop(key core.OperationKey, name string, grace float64) (core.ProcessObservation, error) {
 	id, err := identity(key)
 	if err != nil {

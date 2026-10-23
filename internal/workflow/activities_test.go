@@ -36,13 +36,17 @@ func activityStore(t *testing.T) *store.Store {
 	}
 	var random [12]byte
 	if _, err = rand.Read(random[:]); err != nil {
-		admin.Close(ctx)
+		if err := admin.Close(ctx); err != nil {
+			t.Error(err)
+		}
 		t.Fatal(err)
 	}
 	schema := "makez_activity_test_" + hex.EncodeToString(random[:])
 	quotedSchema := pgx.Identifier{schema}.Sanitize()
 	if _, err = admin.Exec(ctx, "CREATE SCHEMA "+quotedSchema); err != nil {
-		admin.Close(ctx)
+		if err := admin.Close(ctx); err != nil {
+			t.Error(err)
+		}
 		t.Fatal(err)
 	}
 	// A private schema prevents a concurrently running development dispatcher from consuming test outbox rows.
@@ -50,7 +54,9 @@ func activityStore(t *testing.T) *store.Store {
 		if _, err := admin.Exec(ctx, "DROP SCHEMA "+quotedSchema+" CASCADE"); err != nil {
 			t.Errorf("remove isolated test schema: %v", err)
 		}
-		admin.Close(ctx)
+		if err := admin.Close(ctx); err != nil {
+			t.Error(err)
+		}
 	})
 	u, err := url.Parse(databaseURL)
 	if err != nil {
@@ -128,7 +134,11 @@ func TestFinalizePublishesStagedResultAfterSandboxDeletion(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			t.Cleanup(func() { files.Close() })
+			t.Cleanup(func() {
+				if err := files.Close(); err != nil {
+					t.Error(err)
+				}
+			})
 			records, err := files.Archive(context.Background(), task.Run.ID, resultWorkspace("durable result"), []core.ArtifactCandidate{{Path: "report.txt", Required: true}})
 			if err != nil {
 				t.Fatal(err)
@@ -183,7 +193,9 @@ func TestFinalizePublishesStagedResultAfterSandboxDeletion(t *testing.T) {
 				t.Fatal(err)
 			}
 			contents, err := io.ReadAll(file)
-			file.Close()
+			if err := file.Close(); err != nil {
+				t.Error(err)
+			}
 			if err != nil || string(contents) != "durable result" {
 				t.Fatalf("artifact content lost: %q %v", contents, err)
 			}

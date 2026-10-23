@@ -1,3 +1,4 @@
+// Package api exposes workspace-scoped task and artifact operations over HTTP.
 package api
 
 import (
@@ -13,6 +14,8 @@ import (
 	"github.com/makez-dev/makez/internal/telemetry"
 )
 
+// Server holds API dependencies and access settings.
+//
 // @title Makez API
 // @version 1.0
 // @description Workspace-scoped task execution. SSE emits log events with resumable IDs and status snapshots; it closes after terminal events are drained.
@@ -37,8 +40,9 @@ type Server struct {
 }
 type workspaceKey struct{}
 
+// Handler constructs the API and operations routes with shared middleware.
 func (s *Server) Handler() http.Handler {
-	e := echo.NewWithConfig(echo.Config{Logger: slog.Default(), Router: echo.NewRouter(echo.RouterConfig{AutoHandleHEAD: true, OptionsMethodHandler: func(c *echo.Context) error { return echo.ErrMethodNotAllowed }, UseEscapedPathForMatching: true, UnescapePathParamValues: true})})
+	e := echo.NewWithConfig(echo.Config{Logger: slog.Default(), Router: echo.NewRouter(echo.RouterConfig{AutoHandleHEAD: true, OptionsMethodHandler: func(_ *echo.Context) error { return echo.ErrMethodNotAllowed }, UseEscapedPathForMatching: true, UnescapePathParamValues: true})})
 	e.HTTPErrorHandler = s.handleError
 	e.Use(s.observe, s.authorize)
 	e.GET("/healthz", func(c *echo.Context) error { return c.String(200, "ok") })

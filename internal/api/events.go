@@ -117,7 +117,7 @@ func streamEvents(ctx context.Context, w http.ResponseWriter, after int64, timeo
 	}
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("X-Accel-Buffering", "no")
-	w.WriteHeader(200)
+	w.WriteHeader(http.StatusOK)
 	if err := controller.Flush(); err != nil {
 		return streamWriteError(ctx, err)
 	}

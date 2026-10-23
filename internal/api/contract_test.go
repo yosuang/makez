@@ -71,7 +71,7 @@ func TestDocumentationAccessAndReadiness(t *testing.T) {
 		}{
 			{"/swagger/doc.json", "192.0.2.1:1234", 404}, {"/readyz", "127.0.0.1:1234", 200},
 		} {
-			req := httptest.NewRequest("GET", tc.path, nil)
+			req := httptest.NewRequest(http.MethodGet, tc.path, nil)
 			req.RemoteAddr = tc.remote
 			rec := httptest.NewRecorder()
 			handler.ServeHTTP(rec, req)
@@ -79,7 +79,7 @@ func TestDocumentationAccessAndReadiness(t *testing.T) {
 				t.Fatalf("%s: %d", tc.path, rec.Code)
 			}
 		}
-		req := httptest.NewRequest("GET", "/swagger/doc.json", nil)
+		req := httptest.NewRequest(http.MethodGet, "/swagger/doc.json", nil)
 		req.RemoteAddr = "127.0.0.1:1234"
 		rec := httptest.NewRecorder()
 		handler.ServeHTTP(rec, req)
@@ -92,14 +92,14 @@ func TestDocumentationAccessAndReadiness(t *testing.T) {
 		}
 		s.Ready = func(context.Context) error { return errors.New("dependency failed") }
 		rec = httptest.NewRecorder()
-		handler.ServeHTTP(rec, httptest.NewRequest("GET", "/readyz", nil))
+		handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/readyz", nil))
 		if rec.Code != 503 {
 			t.Fatal("unhealthy dependency reported ready")
 		}
 	}
 	s := &Server{}
 	rec := httptest.NewRecorder()
-	s.Handler().ServeHTTP(rec, httptest.NewRequest("GET", "/metrics", nil))
+	s.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/metrics", nil))
 	if rec.Code != 404 {
 		t.Fatal("unexpected metrics scrape endpoint")
 	}
@@ -160,7 +160,7 @@ func TestSwaggerUIAssetsStayLocalAndDevelopmentOnly(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			handler := (&Server{Development: tc.development, OperationsOnly: tc.operationsOnly}).Handler()
 			for _, path := range []string{"index.html", "swagger-ui.css", "swagger-ui-bundle.js", "doc.json"} {
-				req := httptest.NewRequest("GET", "/swagger/"+path, nil)
+				req := httptest.NewRequest(http.MethodGet, "/swagger/"+path, nil)
 				req.RemoteAddr = tc.remote
 				req.Header.Set("X-Forwarded-For", "127.0.0.1")
 				rec := httptest.NewRecorder()
@@ -183,7 +183,7 @@ func TestSwaggerUIAssetsStayLocalAndDevelopmentOnly(t *testing.T) {
 	}
 	handler := (&Server{Development: true}).Handler()
 	for _, path := range []string{"swagger-initializer.js", "../go.mod", "swagger-ui-bundle.js.map"} {
-		req := httptest.NewRequest("GET", "/swagger/"+path, nil)
+		req := httptest.NewRequest(http.MethodGet, "/swagger/"+path, nil)
 		req.RemoteAddr = "127.0.0.1:1234"
 		rec := httptest.NewRecorder()
 		handler.ServeHTTP(rec, req)
@@ -209,13 +209,17 @@ func TestSSEShutdownThroughAPI(t *testing.T) {
 	s := &Server{DB: f.db, Keys: map[string]string{f.token: f.workspace}, Shutdown: shutdown, Metrics: newTestMetrics(t)}
 	server := httptest.NewServer(s.Handler())
 	defer server.Close()
-	req, _ := http.NewRequestWithContext(t.Context(), "GET", server.URL+"/v1/tasks/"+task.ID+"/events", nil)
+	req, _ := http.NewRequestWithContext(t.Context(), http.MethodGet, server.URL+"/v1/tasks/"+task.ID+"/events", nil)
 	req.Header.Set("Authorization", "Bearer "+f.token)
 	response, err := server.Client().Do(req)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer response.Body.Close()
+	defer func() {
+		if err := response.Body.Close(); err != nil {
+			t.Error(err)
+		}
+	}()
 	stop()
 	done := make(chan error, 1)
 	go func() { _, err := io.ReadAll(response.Body); done <- err }()
@@ -238,8 +242,8 @@ func TestRequestLoggingDoesNotExposePayloadOrCredentials(t *testing.T) {
 	e := echo.New()
 	e.HTTPErrorHandler = server.handleError
 	e.Use(server.observe)
-	e.GET("/panic/:id", func(c *echo.Context) error { panic("private-panic-marker") })
-	req := httptest.NewRequest("GET", "/panic/private-task-id?token=private-query-marker", strings.NewReader("private-prompt-marker"))
+	e.GET("/panic/:id", func(_ *echo.Context) error { panic("private-panic-marker") })
+	req := httptest.NewRequest(http.MethodGet, "/panic/private-task-id?token=private-query-marker", strings.NewReader("private-prompt-marker"))
 	req.Header.Set("Authorization", "Bearer private-secret-marker")
 	req.Header.Set("X-Request-ID", "safe-id")
 	rec := httptest.NewRecorder()
@@ -266,14 +270,14 @@ func TestReadinessUsesOneBudgetAndRejectsShutdown(t *testing.T) {
 		return nil
 	}}
 	rec := httptest.NewRecorder()
-	s.Handler().ServeHTTP(rec, httptest.NewRequest("GET", "/readyz", nil))
+	s.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/readyz", nil))
 	if rec.Code != 200 {
 		t.Fatal("healthy dependency rejected")
 	}
 	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Millisecond)
 	defer cancel()
 	s.Ready = func(ctx context.Context) error { <-ctx.Done(); return ctx.Err() }
-	req := httptest.NewRequest("GET", "/readyz", nil).WithContext(ctx)
+	req := httptest.NewRequest(http.MethodGet, "/readyz", nil).WithContext(ctx)
 	rec = httptest.NewRecorder()
 	started := time.Now()
 	s.Handler().ServeHTTP(rec, req)
@@ -285,7 +289,7 @@ func TestReadinessUsesOneBudgetAndRejectsShutdown(t *testing.T) {
 	s.Shutdown = shutdown
 	s.Ready = func(context.Context) error { t.Error("dependency called during shutdown"); return nil }
 	rec = httptest.NewRecorder()
-	s.Handler().ServeHTTP(rec, httptest.NewRequest("GET", "/readyz", nil))
+	s.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/readyz", nil))
 	if rec.Code != 503 {
 		t.Fatal("shutdown reported ready")
 	}
@@ -303,7 +307,11 @@ func newTestMetrics(t *testing.T) *telemetry.Metrics {
 func TestHTTPMetricIncludesEntireStreamLifetime(t *testing.T) {
 	reader := sdkmetric.NewManualReader()
 	provider := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
-	defer provider.Shutdown(context.Background())
+	defer func() {
+		if err := provider.Shutdown(context.Background()); err != nil {
+			t.Error(err)
+		}
+	}()
 	m, err := telemetry.New(provider.Meter("http-test"))
 	if err != nil {
 		t.Fatal(err)
@@ -331,7 +339,11 @@ func TestHTTPMetricIncludesEntireStreamLifetime(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer response.Body.Close()
+	defer func() {
+		if err := response.Body.Close(); err != nil {
+			t.Error(err)
+		}
+	}()
 	var before metricdata.ResourceMetrics
 	if err := reader.Collect(t.Context(), &before); err != nil {
 		t.Fatal(err)

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
@@ -104,7 +105,7 @@ func TestHTTPAuthenticationAndValidation(t *testing.T) {
 	token := strings.Repeat("a", 32)
 	encoded, _ := json.Marshal(map[string]any{"Key": testKey})
 	for _, authenticated := range []bool{false, true} {
-		r := httptest.NewRequest("POST", "/process", bytes.NewReader(encoded))
+		r := httptest.NewRequest(http.MethodPost, "/process", bytes.NewReader(encoded))
 		if authenticated {
 			r.Header.Set("X-Makez-Control-Token", token)
 		}
@@ -146,7 +147,9 @@ func TestOutputCursorAndReplay(t *testing.T) {
 	if err = s.appendOutput(f, "stdout", []byte("hello\n")); err != nil {
 		t.Fatal(err)
 	}
-	f.Close()
+	if err := f.Close(); err != nil {
+		t.Error(err)
+	}
 	page, err := s.Output(testKey, "", 16384)
 	if err != nil || !page.EOF || len(page.Records) != 1 || string(page.Records[0].Data) != "hello\n" {
 		t.Fatalf("output: %#v %v", page, err)

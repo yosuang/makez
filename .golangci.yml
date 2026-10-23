@@ -19,16 +19,22 @@ linters:
   default: none
 
   enable:
-    - depguard
     - dupl
-    - gomodguard_v2
+    - errcheck
+    - errorlint
     - govet
     - ineffassign
     - misspell
     - nakedret
+    - nolintlint
     - revive
     - staticcheck
     - thelper
     - unused
     - usestdlibvars
     - usetesting
+
+  settings:
+    nolintlint:
+      require-explanation: true
+      require-specific: true

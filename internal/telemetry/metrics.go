@@ -13,6 +13,7 @@ import (
 	"go.opentelemetry.io/otel/metric"
 )
 
+// Metrics groups application instruments and backlog observation state.
 type Metrics struct {
 	HTTP            metric.Float64Histogram
 	Streams         metric.Int64UpDownCounter
@@ -28,6 +29,7 @@ type Metrics struct {
 	cleanup         metric.Int64ObservableGauge
 }
 
+// New creates application instruments using the supplied meter.
 func New(meter metric.Meter) (*Metrics, error) {
 	m := &Metrics{meter: meter}
 	var errs [11]error
@@ -49,6 +51,7 @@ func New(meter metric.Meter) (*Metrics, error) {
 	return m, nil
 }
 
+// Backlog contains an installation-wide snapshot of pending work.
 type Backlog struct {
 	Pending                        int64
 	OldestSeconds                  float64
@@ -80,6 +83,7 @@ func (m *Metrics) RegisterBacklog(read func(context.Context) (Backlog, error)) e
 	return err
 }
 
+// Result records a committed terminal task transition.
 // Metrics follow a successful commit, so a crash between commit and observation
 // can miss a sample. They are operational counters, not an accounting ledger.
 func (m *Metrics) Result(ctx context.Context, state string, started time.Time) {

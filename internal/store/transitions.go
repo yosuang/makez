@@ -32,12 +32,14 @@ func allowedRunTransition(from, to core.RunState) bool {
 	}
 	return false
 }
+
+// UpdateRun validates and commits a run transition under a row lock.
 func (s *Store) UpdateRun(ctx context.Context, id string, u RunUpdate) error {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback(ctx)
+	defer tx.Rollback(ctx) //nolint:errcheck // Commit closes the transaction; pgx discards the connection on rollback failure.
 	r, err := scanRun(tx.QueryRow(ctx, "SELECT "+runColumns+" FROM makez_runs WHERE id=$1 FOR UPDATE", id))
 	if err != nil {
 		return err
@@ -124,6 +126,7 @@ func nonNil(value []byte) []byte {
 	return value
 }
 
+// Publish atomically publishes the final task state and archived artifacts.
 func (s *Store) Publish(ctx context.Context, workspace, id string, state core.TaskState, reason string, verified bool, cleanup core.CleanupState, artifacts []Artifact) error {
 	if !IsTerminal(state) {
 		return ErrConflict
@@ -132,7 +135,7 @@ func (s *Store) Publish(ctx context.Context, workspace, id string, state core.Ta
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback(ctx)
+	defer tx.Rollback(ctx) //nolint:errcheck // Commit closes the transaction; pgx discards the connection on rollback failure.
 	t, err := taskInTx(ctx, tx, workspace, id)
 	if err != nil {
 		return err
@@ -207,6 +210,8 @@ func (s *Store) Publish(ctx context.Context, workspace, id string, state core.Ta
 	s.Metrics.Result(ctx, string(state), started)
 	return nil
 }
+
+// SetCleanup updates the cleanup state of a run.
 func (s *Store) SetCleanup(ctx context.Context, id string, state core.CleanupState) error {
 	if state != core.CleanupDone && state != core.CleanupPending && state != core.CleanupBlocked && state != core.CleanupNotRequired {
 		return ErrConflict
@@ -221,6 +226,7 @@ func (s *Store) SetCleanup(ctx context.Context, id string, state core.CleanupSta
 	return nil
 }
 
+// BeginOperation records the intent and request hash of a keyed external operation.
 func (s *Store) BeginOperation(ctx context.Context, runID, step, hash string) (string, bool, error) {
 	if hash == "" || (step != "sandbox" && step != "agent") {
 		return "", false, ErrConflict
@@ -229,7 +235,7 @@ func (s *Store) BeginOperation(ctx context.Context, runID, step, hash string) (s
 	if err != nil {
 		return "", false, err
 	}
-	defer tx.Rollback(ctx)
+	defer tx.Rollback(ctx) //nolint:errcheck // Commit closes the transaction; pgx discards the connection on rollback failure.
 	var taskState core.TaskState
 	var deadline time.Time
 	if err = tx.QueryRow(ctx, `SELECT t.state,t.deadline FROM makez_tasks t JOIN makez_runs r ON r.task_id=t.id WHERE r.id=$1 FOR UPDATE OF t`, runID).Scan(&taskState, &deadline); err != nil {
@@ -261,6 +267,8 @@ func (s *Store) BeginOperation(ctx context.Context, runID, step, hash string) (s
 	}
 	return "DISPATCHING", true, nil
 }
+
+// ConfirmOperation records the reconciled outcome of a keyed external operation.
 func (s *Store) ConfirmOperation(ctx context.Context, runID, step string) error {
 	tag, err := s.pool.Exec(ctx, `UPDATE makez_operations SET phase='CONFIRMED',updated_at=now() WHERE run_id=$1 AND step=$2`, runID, step)
 	if err != nil {

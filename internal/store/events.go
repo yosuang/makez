@@ -10,6 +10,7 @@ import (
 	"github.com/makez-dev/makez/internal/core"
 )
 
+// ClaimObserver advances the observer epoch to fence out stale output writers.
 func (s *Store) ClaimObserver(ctx context.Context, runID string) (int64, error) {
 	var epoch int64
 	err := s.pool.QueryRow(ctx, `UPDATE makez_runs SET observer_epoch=observer_epoch+1 WHERE id=$1 AND state NOT IN ('SUCCEEDED','FAILED','CANCELED') RETURNING observer_epoch`, runID).Scan(&epoch)
@@ -18,6 +19,8 @@ func (s *Store) ClaimObserver(ctx context.Context, runID string) (int64, error) 
 	}
 	return epoch, err
 }
+
+// AppendOutput commits decoded events and the parser cursor for the current observer.
 func (s *Store) AppendOutput(ctx context.Context, runID string, epoch int64, cursor string, parser []byte, events []core.AgentEvent) error {
 	if len(parser) > 64<<10 || len(cursor) > 4096 || len(events) > 1024 {
 		return fmt.Errorf("output batch exceeds limit")
@@ -26,7 +29,7 @@ func (s *Store) AppendOutput(ctx context.Context, runID string, epoch int64, cur
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback(ctx)
+	defer tx.Rollback(ctx) //nolint:errcheck // Commit closes the transaction; pgx discards the connection on rollback failure.
 	var current int64
 	var state core.RunState
 	if err = tx.QueryRow(ctx, `SELECT observer_epoch,state FROM makez_runs WHERE id=$1 FOR UPDATE`, runID).Scan(&current, &state); err != nil {
@@ -57,8 +60,10 @@ func (s *Store) AppendOutput(ctx context.Context, runID string, epoch int64, cur
 	return tx.Commit(ctx)
 }
 
+// EventPageSize bounds the number of events returned in one replay page.
 const EventPageSize = 500
 
+// Events returns task events after a replay sequence number.
 func (s *Store) Events(ctx context.Context, workspace, taskID string, after int64) ([]Event, error) {
 	var raw []byte
 	// The outer row checks workspace ownership even when no run/events exist.
@@ -75,6 +80,8 @@ func (s *Store) Events(ctx context.Context, workspace, taskID string, after int6
 	err = json.Unmarshal(raw, &events)
 	return events, err
 }
+
+// Artifacts lists a task’s published artifacts within its workspace.
 func (s *Store) Artifacts(ctx context.Context, workspace, taskID string) ([]Artifact, error) {
 	if _, err := s.Get(ctx, workspace, taskID); err != nil {
 		return nil, err
@@ -102,9 +109,13 @@ func scanArtifact(row rowScanner) (Artifact, error) {
 	}
 	return a, err
 }
+
+// Artifact loads one published artifact within its workspace.
 func (s *Store) Artifact(ctx context.Context, workspace, id string) (Artifact, error) {
 	return scanArtifact(s.pool.QueryRow(ctx, `SELECT a.id,a.run_id,a.path,a.storage_key,a.sha256,a.media_type,a.size FROM makez_artifacts a JOIN makez_runs r ON r.id=a.run_id JOIN makez_tasks t ON t.id=r.task_id WHERE t.workspace_id=$1 AND a.id=$2`, workspace, id))
 }
+
+// Pending lists a batch of outbox commands due for dispatch.
 func (s *Store) Pending(ctx context.Context, limit int) ([]Outbox, error) {
 	if limit < 1 || limit > 500 {
 		limit = 100
@@ -124,10 +135,14 @@ func (s *Store) Pending(ctx context.Context, limit int) ([]Outbox, error) {
 	}
 	return pending, rows.Err()
 }
+
+// Delivered marks an outbox command as delivered.
 func (s *Store) Delivered(ctx context.Context, id string) error {
 	_, err := s.pool.Exec(ctx, `UPDATE makez_outbox SET delivered_at=COALESCE(delivered_at,now()),last_error='' WHERE id=$1`, id)
 	return err
 }
+
+// RetryOutbox records a failed dispatch attempt and schedules its retry.
 func (s *Store) RetryOutbox(ctx context.Context, id, reason string) error {
 	if len(reason) > 2048 {
 		reason = reason[:2048]

@@ -8,21 +8,31 @@ import (
 	tw "go.temporal.io/sdk/workflow"
 )
 
+// Queue is the task queue used by Makez workflows and activities.
 const Queue = "makez-v1"
 
+// Input identifies a task within its workspace.
 type Input struct{ WorkspaceID, TaskID string }
+
+// Initialized returns the task deadline and whether execution is already complete.
 type Initialized struct {
 	Done     bool
 	Deadline time.Time
 }
+
+// FinishInput carries the task identity and finalization reason.
 type FinishInput struct {
 	Input
 	Reason string
 }
 
-func ID(workspace, task string) string        { return "makez/task/" + workspace + "/" + task }
+// ID returns the stable workflow ID for a task.
+func ID(workspace, task string) string { return "makez/task/" + workspace + "/" + task }
+
+// CleanupID returns the stable cleanup workflow ID for a task.
 func CleanupID(workspace, task string) string { return "makez/cleanup/" + workspace + "/" + task }
 
+// Task orchestrates preparation, execution, observation, and finalization.
 func Task(ctx tw.Context, in Input) error {
 	opts := tw.ActivityOptions{StartToCloseTimeout: 3 * time.Minute, WaitForCancellation: true, RetryPolicy: &temporal.RetryPolicy{InitialInterval: time.Second, MaximumInterval: 10 * time.Second, MaximumAttempts: 5}}
 	ctx = tw.WithActivityOptions(ctx, opts)
@@ -78,6 +88,7 @@ func Task(ctx tw.Context, in Input) error {
 	return tw.ExecuteActivity(finalCtx, "Finalize", FinishInput{Input: in, Reason: reason}).Get(finalCtx, nil)
 }
 
+// Cleanup retries sandbox disposal and records blocked cleanup when retries expire.
 func Cleanup(ctx tw.Context, in Input) error {
 	ctx = tw.WithActivityOptions(ctx, tw.ActivityOptions{StartToCloseTimeout: 2 * time.Minute, ScheduleToCloseTimeout: 30 * time.Minute, RetryPolicy: &temporal.RetryPolicy{InitialInterval: 5 * time.Second, MaximumInterval: time.Minute}})
 	err := tw.ExecuteActivity(ctx, "Reap", in).Get(ctx, nil)

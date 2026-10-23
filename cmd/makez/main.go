@@ -1,3 +1,4 @@
+// Command makez runs the API, workflow worker, or both.
 package main
 
 import (
@@ -74,7 +75,7 @@ func run() error {
 		if err != nil {
 			return fmt.Errorf("cannot listen on %s; stop the existing process or set %s: %w", address, listenSetting, err)
 		}
-		defer listener.Close()
+		defer listener.Close() //nolint:errcheck // Serve or Shutdown may already have closed this listener.
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -111,7 +112,7 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	defer files.Close()
+	defer files.Close() //nolint:errcheck // The artifact root is a directory handle; file writes are closed separately.
 	tc, err := client.NewLazyClient(client.Options{Logger: temporallog.NewStructuredLogger(slog.Default()), HostPort: env("MAKEZ_TEMPORAL_ADDRESS", "127.0.0.1:17233"), Namespace: env("MAKEZ_TEMPORAL_NAMESPACE", "default")})
 	if err != nil {
 		return err
@@ -156,7 +157,7 @@ func run() error {
 		return err
 	}}).Handler()
 	srv := &http.Server{Addr: listener.Addr().String(), Handler: handler, ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 15 * time.Second, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 32 << 10}
-	defer srv.Close()
+	defer srv.Close() //nolint:errcheck // Fallback cleanup after the checked Shutdown path.
 	done := make(chan error, 1)
 	go func() {
 		slog.Info("makez HTTP listening", "address", srv.Addr, "mode", mode)
@@ -235,7 +236,7 @@ func loadSecrets(path string) (*secret.Resolver, error) {
 		if err != nil {
 			return nil, errors.New("cannot load MAKEZ_SECRETS_FILE")
 		}
-		defer file.Close()
+		defer file.Close() //nolint:errcheck // The configuration file is read-only; read errors are handled below.
 		info, err := file.Stat()
 		if err != nil || !info.Mode().IsRegular() || info.Size() > maxHostConfigBytes {
 			return nil, errors.New("invalid MAKEZ_SECRETS_FILE configuration")

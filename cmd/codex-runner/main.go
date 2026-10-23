@@ -1,3 +1,4 @@
+// Command codex-runner executes the Codex CLI using the Makez file contract.
 package main
 
 import (

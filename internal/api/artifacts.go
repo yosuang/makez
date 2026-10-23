@@ -52,7 +52,7 @@ func (s *Server) download(c *echo.Context) error {
 	if err != nil {
 		return err
 	}
-	defer f.Close()
+	defer f.Close() //nolint:errcheck // The artifact is read-only and response streaming handles read errors.
 	w.Header().Set("Content-Type", "application/octet-stream")
 	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", path.Base(a.Path)))
 	w.Header().Set("Content-Length", strconv.FormatInt(a.Size, 10))

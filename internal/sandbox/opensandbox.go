@@ -25,26 +25,33 @@ import (
 	"github.com/makez-dev/makez/internal/core"
 )
 
+// Config specifies the OpenSandbox connection and runtime settings.
 type Config struct {
 	BaseURL, APIKey, InstallationID, ControlKey, Image string
 	HTTPClient                                         *http.Client
 }
 
+// Provider implements sandbox operations using OpenSandbox and the supervisor.
 type Provider struct {
 	cfg      Config
 	client   *http.Client
 	mu       sync.Mutex
 	attempts map[string]string
 }
+
+// Error classifies a provider failure without exposing sensitive response data.
 type Error struct {
 	Kind    core.FailureCode
 	Message string
 }
 
-func (e *Error) Error() string                         { return e.Message }
+func (e *Error) Error() string { return e.Message }
+
+// Code returns the failure classification.
 func (e *Error) Code() core.FailureCode                { return e.Kind }
 func fail(code core.FailureCode, message string) error { return &Error{code, message} }
 
+// New validates configuration and constructs an OpenSandbox provider.
 func New(cfg Config) (*Provider, error) {
 	u, err := url.Parse(cfg.BaseURL)
 	if err != nil || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") {
@@ -65,7 +72,11 @@ func New(cfg Config) (*Provider, error) {
 	clone.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
 	return &Provider{cfg: cfg, client: &clone, attempts: map[string]string{}}, nil
 }
+
+// BackendID returns the identity used to associate runs with this provider.
 func (p *Provider) BackendID() string { return "opensandbox" }
+
+// Capabilities reports the supported operations and runtime profile limits.
 func (p *Provider) Capabilities(_ context.Context, id, version string) (core.SandboxCapabilities, error) {
 	if id != "default" || version != "1" {
 		return core.SandboxCapabilities{}, fail(core.Unsupported, "unknown runtime profile")
@@ -129,17 +140,17 @@ func (p *Provider) request(ctx context.Context, method, target string, body any,
 		}
 		return fail(code, "OpenSandbox request failed")
 	}
-	defer resp.Body.Close()
+	defer resp.Body.Close() //nolint:errcheck // Response decoding reports read failures; closing only releases transport resources.
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		code := core.Transient
 		switch resp.StatusCode {
-		case 400, 422:
+		case http.StatusBadRequest, http.StatusUnprocessableEntity:
 			code = core.InvalidInput
-		case 401, 403:
+		case http.StatusUnauthorized, http.StatusForbidden:
 			code = core.PermissionDenied
-		case 404:
+		case http.StatusNotFound:
 			code = core.ResourceLost
-		case 409:
+		case http.StatusConflict:
 			code = core.Conflict
 		default:
 			if method != "GET" {
@@ -191,6 +202,8 @@ func (p *Provider) list(ctx context.Context, key core.OperationKey) ([]resource,
 	}
 	return nil, fail(core.OutcomeUnknown, "sandbox enumeration exceeded page bound")
 }
+
+// Inspect finds sandbox resources owned by an operation key.
 func (p *Provider) Inspect(ctx context.Context, key core.OperationKey) (core.SandboxObservation, error) {
 	rows, err := p.list(ctx, key)
 	o := core.SandboxObservation{State: core.SandboxAbsent, ObservedAt: time.Now().UTC()}
@@ -220,6 +233,8 @@ func (p *Provider) Inspect(ctx context.Context, key core.OperationKey) (core.San
 	}
 	return o, nil
 }
+
+// Ensure reconciles creation of the sandbox for an operation key.
 func (p *Provider) Ensure(ctx context.Context, r core.SandboxRequest) (core.SandboxRef, error) {
 	empty := core.SandboxRef{}
 	if _, err := p.Capabilities(ctx, r.RuntimeProfileID, r.RuntimeProfileVersion); err != nil {
@@ -299,9 +314,13 @@ func (p *Provider) waitReady(ctx context.Context, ref core.SandboxRef) error {
 		}
 	}
 }
+
+// Renew reports that this provider's fixed lifetime profile does not support renewal.
 func (p *Provider) Renew(context.Context, core.SandboxRef, time.Time) error {
 	return fail(core.Unsupported, "fixed lifetime runtime profile does not renew")
 }
+
+// Delete removes sandbox resources owned by an operation key.
 func (p *Provider) Delete(ctx context.Context, key core.OperationKey) error {
 	rows, err := p.list(ctx, key)
 	if err != nil {
@@ -425,6 +444,7 @@ func validateSecrets(r core.StartRequest) error {
 	return nil
 }
 
+// Start launches or reconciles a keyed process through the supervisor.
 func (p *Provider) Start(ctx context.Context, s core.SandboxRef, r core.StartRequest) (core.ProcessRef, error) {
 	if err := validateSecrets(r); err != nil {
 		return core.ProcessRef{}, err
@@ -444,6 +464,7 @@ func (p *Provider) Start(ctx context.Context, s core.SandboxRef, r core.StartReq
 	return *o.Ref, nil
 }
 
+// Process retrieves the supervisor’s receipt for a keyed execution.
 func (p *Provider) Process(ctx context.Context, s core.SandboxRef, key core.OperationKey) (core.ProcessObservation, error) {
 	var o core.ProcessObservation
 	err := p.runtime(ctx, s, "/process", map[string]any{"Key": key}, &o)
@@ -452,14 +473,20 @@ func (p *Provider) Process(ctx context.Context, s core.SandboxRef, key core.Oper
 	}
 	return o, err
 }
+
+// Output reads a page of replayable process output.
 func (p *Provider) Output(ctx context.Context, r core.ProcessRef, cursor string, maxBytes int) (core.OutputPage, error) {
 	var o core.OutputPage
 	err := p.runtime(ctx, r.Sandbox, "/output", map[string]any{"Key": r.Key, "Cursor": cursor, "MaxBytes": maxBytes}, &o)
 	return o, err
 }
+
+// Stop requests termination of a keyed execution through the supervisor.
 func (p *Provider) Stop(ctx context.Context, s core.SandboxRef, key core.OperationKey, policy core.StopPolicy) error {
 	return p.runtime(ctx, s, "/stop", map[string]any{"Key": key, "GraceSeconds": policy.GracePeriod.Seconds(), "Signal": policy.Signal}, nil)
 }
+
+// ReadFile opens a workspace file through the supervisor.
 func (p *Provider) ReadFile(ctx context.Context, s core.SandboxRef, path string) (io.ReadCloser, error) {
 	var o struct{ Data []byte }
 	if err := p.runtime(ctx, s, "/read", map[string]string{"Path": path}, &o); err != nil {
@@ -470,6 +497,8 @@ func (p *Provider) ReadFile(ctx context.Context, s core.SandboxRef, path string)
 	}
 	return io.NopCloser(bytes.NewReader(o.Data)), nil
 }
+
+// WriteFile writes a bounded input file through the supervisor.
 func (p *Provider) WriteFile(ctx context.Context, s core.SandboxRef, path string, contents io.Reader, size int64) error {
 	if size < 0 || size > 16<<20 {
 		return fail(core.InvalidInput, "input file exceeds 16 MiB")

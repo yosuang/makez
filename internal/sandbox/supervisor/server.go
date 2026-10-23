@@ -46,6 +46,7 @@ type receipt struct {
 	Exit       *core.ProcessExit
 }
 
+// Supervisor owns process receipts, output logs, and workspace access.
 type Supervisor struct {
 	control           string
 	workspace         string
@@ -56,6 +57,7 @@ type Supervisor struct {
 	secretContextLost bool
 }
 
+// New opens supervisor state and detects lost secret context after a restart.
 func New(control, workspace string) (*Supervisor, error) {
 	if err := os.MkdirAll(control, 0700); err != nil {
 		return nil, err
@@ -135,7 +137,7 @@ func (s *Supervisor) save(id string, state *receipt) error {
 	if err != nil {
 		return err
 	}
-	defer dir.Close()
+	defer dir.Close() //nolint:errcheck // The directory sync result is returned separately.
 	return dir.Sync()
 }
 
@@ -155,6 +157,7 @@ func (s *Supervisor) observation(id string, state *receipt) core.ProcessObservat
 	return o
 }
 
+// Process returns the current receipt for a keyed execution.
 func (s *Supervisor) Process(key core.OperationKey) (core.ProcessObservation, error) {
 	id, err := identity(key)
 	if err != nil {
@@ -184,6 +187,7 @@ type request struct {
 	Data         []byte
 }
 
+// Handler serves authenticated control operations.
 func (s *Supervisor) Handler(token string) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {

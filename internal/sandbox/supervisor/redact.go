@@ -112,7 +112,7 @@ func validEnv(name, value string) bool {
 		return false
 	}
 	for i, r := range name {
-		if r != '_' && !(r < 128 && unicode.IsLetter(r)) && !(i > 0 && r >= '0' && r <= '9') {
+		if r != '_' && (r >= 128 || !unicode.IsLetter(r)) && (i <= 0 || r < '0' || r > '9') {
 			return false
 		}
 	}

@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"io"
+	"log/slog"
 	"os"
 	"strings"
 	"syscall"
@@ -36,14 +37,14 @@ func (s *Supervisor) parent(path string, create bool) (*os.Root, string, error) 
 				err = nil
 			}
 			if err != nil {
-				root.Close()
+				root.Close() //nolint:errcheck // Release a directory descriptor; traversal errors are handled separately.
 				return nil, "", err
 			}
 		}
 		// A descriptor opened with NOFOLLOW preserves the original no-symlink boundary.
 		file, err := root.OpenFile(part, os.O_RDONLY|syscall.O_DIRECTORY|syscall.O_NOFOLLOW, 0)
 		if err != nil {
-			root.Close()
+			root.Close() //nolint:errcheck // Release a directory descriptor; traversal errors are handled separately.
 			return nil, "", err
 		}
 		next, err := root.OpenRoot(part)
@@ -51,12 +52,12 @@ func (s *Supervisor) parent(path string, create bool) (*os.Root, string, error) 
 			before, e1 := file.Stat()
 			after, e2 := next.Stat(".")
 			if e1 != nil || e2 != nil || !os.SameFile(before, after) {
-				next.Close()
+				next.Close() //nolint:errcheck // Discard the directory descriptor after validation failed.
 				err = invalid("workspace directory changed")
 			}
 		}
-		file.Close()
-		root.Close()
+		file.Close() //nolint:errcheck // Release a read-only descriptor; read and metadata errors are handled separately.
+		root.Close() //nolint:errcheck // Release a directory descriptor; traversal errors are handled separately.
 		if err != nil {
 			return nil, "", err
 		}
@@ -70,12 +71,12 @@ func (s *Supervisor) Read(path string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer root.Close()
+	defer root.Close() //nolint:errcheck // The directory handle owns no buffered file data.
 	file, err := root.OpenFile(name, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
 	if err != nil {
 		return nil, err
 	}
-	defer file.Close()
+	defer file.Close() //nolint:errcheck // The workspace file is read-only; read errors are returned below.
 	info, err := file.Stat()
 	if err != nil {
 		return nil, err
@@ -122,7 +123,7 @@ func (s *Supervisor) Write(path string, content []byte) error {
 	if err != nil {
 		return err
 	}
-	defer root.Close()
+	defer root.Close() //nolint:errcheck // The directory handle owns no buffered file data.
 	var random [16]byte
 	if _, err = rand.Read(random[:]); err != nil {
 		return err
@@ -132,7 +133,11 @@ func (s *Supervisor) Write(path string, content []byte) error {
 	if err != nil {
 		return err
 	}
-	defer root.Remove(temporary)
+	defer func() {
+		if err := root.Remove(temporary); err != nil && !errors.Is(err, os.ErrNotExist) {
+			slog.Warn("cannot remove temporary workspace file")
+		}
+	}()
 	_, err = file.Write(content)
 	if err == nil {
 		err = file.Chown(agentUID, agentUID)
@@ -154,6 +159,6 @@ func (s *Supervisor) Write(path string, content []byte) error {
 	if err != nil {
 		return err
 	}
-	defer dir.Close()
+	defer dir.Close() //nolint:errcheck // The directory sync result is returned separately.
 	return dir.Sync()
 }
