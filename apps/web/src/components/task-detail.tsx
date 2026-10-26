@@ -105,7 +105,7 @@ export function TaskDetail({
 
   return (
     <div className="grid min-h-0 flex-1 grid-cols-1 overflow-auto lg:grid-cols-[minmax(0,1fr)_300px] lg:grid-rows-[minmax(0,1fr)] lg:overflow-hidden">
-      <section className="min-w-0 px-6 py-5 lg:overflow-auto" aria-label="Run">
+      <section className="min-w-0 px-6 py-5 lg:min-h-0 lg:overflow-auto" aria-label="Run">
         <h1 className="text-lg font-medium wrap-anywhere">{task?.prompt ?? "Loading task…"}</h1>
         {task && (
           <div className="mt-3 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
@@ -167,10 +167,10 @@ export function TaskDetail({
         </Collapsible>
       </section>
       <aside
-        className="flex min-h-[420px] flex-col border-t border-border bg-surface lg:min-h-0 lg:border-t-0 lg:border-l"
+        className="flex flex-col border-t border-border bg-surface lg:min-h-0 lg:overflow-hidden lg:border-t-0 lg:border-l"
         aria-label="Task details"
       >
-        <Tabs defaultValue="artifacts" className="min-h-0 flex-1 gap-0">
+        <Tabs defaultValue="artifacts" className="flex w-full flex-col gap-0 lg:min-h-0 lg:flex-1">
           <TabsList
             variant="line"
             className="h-10 w-full justify-start gap-1 rounded-none border-b bg-transparent px-2"
@@ -185,7 +185,7 @@ export function TaskDetail({
               Details
             </TabsTrigger>
           </TabsList>
-          <TabsContent value="artifacts" className="min-h-0 overflow-auto p-3">
+          <TabsContent value="artifacts" className="overflow-auto p-3 lg:min-h-0 lg:flex-1">
             {artifacts.length ? (
               <div className="space-y-2">
                 {artifacts.map((file) => (
@@ -224,10 +224,10 @@ export function TaskDetail({
               </p>
             )}
           </TabsContent>
-          <TabsContent value="log" className="flex min-h-0 flex-col overflow-hidden">
+          <TabsContent value="log" className="flex flex-col overflow-hidden lg:min-h-0 lg:flex-1">
             <LogPanel events={events} streamState={streamState} />
           </TabsContent>
-          <TabsContent value="details" className="min-h-0 overflow-auto p-3">
+          <TabsContent value="details" className="overflow-auto p-3 lg:min-h-0 lg:flex-1">
             {task ? (
               <dl className="space-y-3 text-sm">
                 <Detail label="Task ID" value={task.id} mono />
@@ -332,7 +332,7 @@ function LogPanel({ events, streamState }: { events: RunEvent[]; streamState: st
       </div>
       <div
         ref={logs}
-        className="min-h-0 flex-1 overflow-auto px-3 pb-3"
+        className="max-h-80 overflow-auto px-3 pb-3 lg:max-h-none lg:min-h-0 lg:flex-1"
         role="log"
         aria-label="Run log"
         tabIndex={0}
