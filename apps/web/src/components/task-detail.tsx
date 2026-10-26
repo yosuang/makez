@@ -30,6 +30,9 @@ import {
 } from "@/lib/format";
 import { StatusPill } from "@/components/status-pill";
 
+const tabTriggerClass =
+  "!flex-none bg-transparent px-2.5 shadow-none data-active:bg-transparent dark:data-active:border-transparent dark:data-active:bg-transparent";
+
 export function TaskDetail({
   token,
   task,
@@ -175,13 +178,13 @@ export function TaskDetail({
             variant="line"
             className="h-10 w-full justify-start gap-1 rounded-none border-b bg-transparent px-2"
           >
-            <TabsTrigger value="artifacts" className="flex-none px-2">
+            <TabsTrigger value="artifacts" className={tabTriggerClass}>
               Artifacts
             </TabsTrigger>
-            <TabsTrigger value="log" className="flex-none px-2">
+            <TabsTrigger value="log" className={tabTriggerClass}>
               Log
             </TabsTrigger>
-            <TabsTrigger value="details" className="flex-none px-2">
+            <TabsTrigger value="details" className={tabTriggerClass}>
               Details
             </TabsTrigger>
           </TabsList>
