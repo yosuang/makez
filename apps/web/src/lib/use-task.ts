@@ -9,7 +9,7 @@ import {
   type Task,
 } from "./api";
 
-export function useTask(baseUrl: string, token: string, id: string) {
+export function useTask(token: string, id: string) {
   const [task, setTask] = useState<Task>();
   const [events, setEvents] = useState<RunEvent[]>([]);
   const [artifacts, setArtifacts] = useState<Artifact[]>([]);
@@ -31,10 +31,9 @@ export function useTask(baseUrl: string, token: string, id: string) {
 
     async function refresh() {
       try {
-        const auth = { baseUrl, token };
-        const current: Task = await (await api(auth, `/v1/tasks/${id}`, options)).json();
+        const current: Task = await (await api(token, `/v1/tasks/${id}`, options)).json();
         const files: Artifact[] = await (
-          await api(auth, `/v1/tasks/${id}/artifacts`, options)
+          await api(token, `/v1/tasks/${id}/artifacts`, options)
         ).json();
         if (controller.signal.aborted) return;
         setTask(current);
@@ -51,7 +50,7 @@ export function useTask(baseUrl: string, token: string, id: string) {
     async function observe() {
       try {
         setStreamState(cursor === "0" ? "Connecting" : "Reconnecting");
-        const response = await api({ baseUrl, token }, `/v1/tasks/${id}/events`, {
+        const response = await api(token, `/v1/tasks/${id}/events`, {
           ...options,
           headers: { "Last-Event-ID": cursor },
         });
@@ -82,7 +81,7 @@ export function useTask(baseUrl: string, token: string, id: string) {
         if (ended) {
           setStreamState("Log synced");
           const files: Artifact[] = await (
-            await api({ baseUrl, token }, `/v1/tasks/${id}/artifacts`, options)
+            await api(token, `/v1/tasks/${id}/artifacts`, options)
           ).json();
           if (!controller.signal.aborted) setArtifacts(files);
           return;
@@ -107,7 +106,7 @@ export function useTask(baseUrl: string, token: string, id: string) {
       clearTimeout(reconnect);
       clearTimeout(poll);
     };
-  }, [baseUrl, token, id]);
+  }, [token, id]);
 
   return { task, events, artifacts, error, streamState, setTask };
 }

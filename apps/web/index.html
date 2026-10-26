@@ -3,12 +3,19 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>makez · Make building easy</title>
-    <meta
-      name="description"
-      content="Hand an idea to an Agent, follow the run, and collect the result."
-    />
+    <title>makez</title>
+    <meta name="description" content="Workspace console for makez tasks." />
     <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <script>
+      try {
+        var theme = localStorage.getItem("makez.theme") || "dark";
+        var dark = true;
+        if (theme === "light") dark = false;
+        else if (theme === "system") dark = matchMedia("(prefers-color-scheme: dark)").matches;
+        document.documentElement.classList.toggle("dark", dark);
+        document.documentElement.style.colorScheme = dark ? "dark" : "light";
+      } catch (e) {}
+    </script>
   </head>
   <body>
     <div id="root"></div>
