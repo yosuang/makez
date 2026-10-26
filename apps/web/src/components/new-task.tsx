@@ -1,6 +1,11 @@
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import { ArrowUp, Bot, Clock, KeyRound, LoaderCircle } from "lucide-react";
-import { Button } from "@makez/ui/components/button";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@makez/ui/components/dropdown-menu";
 import {
   InputGroup,
   InputGroupAddon,
@@ -9,13 +14,7 @@ import {
   InputGroupText,
   InputGroupTextarea,
 } from "@makez/ui/components/input-group";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@makez/ui/components/select";
+import { Separator } from "@makez/ui/components/separator";
 import { api, type Agent, type Task } from "@/lib/api";
 import { message } from "@/lib/format";
 
@@ -108,54 +107,48 @@ export function NewTask({
               className="min-h-36 px-4 py-3"
             />
             <InputGroupAddon align="block-end" className="flex-wrap">
-              <Select
-                value={agent || null}
-                onValueChange={(value) => {
-                  if (value) setAgent(value);
-                }}
-                disabled={!token || busy || !agents.length}
-              >
-                <SelectTrigger type="button" size="sm" aria-label="Agent" className="max-w-52">
+              <DropdownMenu>
+                <DropdownMenuTrigger
+                  disabled={!token || busy || !agents.length}
+                  render={<InputGroupButton variant="ghost" />}
+                >
                   <Bot />
-                  <SelectValue placeholder="No agent" />
-                </SelectTrigger>
-                <SelectContent align="start">
-                  {agents.map((item) => (
-                    <SelectItem
-                      key={`${item.ID}@${item.Version}`}
-                      value={`${item.ID}@${item.Version}`}
-                    >
-                      {item.ID}@{item.Version}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-              <InputGroup className="w-36">
-                <InputGroupAddon>
-                  <Clock />
-                  <InputGroupText>Time</InputGroupText>
-                </InputGroupAddon>
-                <InputGroupInput
-                  id="timeout"
-                  aria-label="Time limit in seconds"
-                  type="number"
-                  min={5}
-                  max={5400}
-                  step={1}
-                  required
-                  value={timeout}
-                  onChange={(event) => setTimeoutValue(event.target.value)}
-                  disabled={busy}
-                />
-                <InputGroupAddon align="inline-end">
-                  <InputGroupText>s</InputGroupText>
-                </InputGroupAddon>
-              </InputGroup>
+                  {agent || "No agent"}
+                </DropdownMenuTrigger>
+                <DropdownMenuContent side="top" align="start">
+                  {agents.map((item) => {
+                    const value = `${item.ID}@${item.Version}`;
+                    return (
+                      <DropdownMenuItem key={value} onClick={() => setAgent(value)}>
+                        {value}
+                      </DropdownMenuItem>
+                    );
+                  })}
+                </DropdownMenuContent>
+              </DropdownMenu>
+              <Separator orientation="vertical" className="data-[orientation=vertical]:h-4" />
+              <InputGroupText>
+                <Clock />
+                Time
+              </InputGroupText>
+              <InputGroupInput
+                id="timeout"
+                aria-label="Time limit in seconds"
+                type="number"
+                min={5}
+                max={5400}
+                step={1}
+                required
+                value={timeout}
+                onChange={(event) => setTimeoutValue(event.target.value)}
+                disabled={busy}
+                className="h-7 w-14 flex-none px-1"
+              />
+              <InputGroupText>s</InputGroupText>
               {agent.startsWith("demo@") && (
-                <InputGroup className="w-36">
-                  <InputGroupAddon>
-                    <InputGroupText>Demo</InputGroupText>
-                  </InputGroupAddon>
+                <>
+                  <Separator orientation="vertical" className="data-[orientation=vertical]:h-4" />
+                  <InputGroupText>Demo</InputGroupText>
                   <InputGroupInput
                     id="delay"
                     aria-label="Demo duration in seconds"
@@ -167,28 +160,26 @@ export function NewTask({
                     value={delay}
                     onChange={(event) => setDelay(event.target.value)}
                     disabled={busy}
+                    className="h-7 w-14 flex-none px-1"
                   />
-                  <InputGroupAddon align="inline-end">
-                    <InputGroupText>s</InputGroupText>
-                  </InputGroupAddon>
-                </InputGroup>
+                  <InputGroupText>s</InputGroupText>
+                </>
               )}
               {!token && (
-                <Button type="button" variant="outline" size="sm" onClick={onAccess}>
+                <InputGroupButton type="button" variant="ghost" onClick={onAccess}>
                   <KeyRound />
                   Access workspace
-                </Button>
+                </InputGroupButton>
               )}
               <InputGroupButton
                 type="submit"
                 variant="default"
-                size="icon-sm"
+                size="icon-xs"
                 className="ml-auto rounded-full"
-                aria-label="Submit task"
-                title="Submit task"
                 disabled={busy || !token || !agent || !draft.trim()}
               >
                 {busy ? <LoaderCircle className="animate-spin" /> : <ArrowUp />}
+                <span className="sr-only">Send</span>
               </InputGroupButton>
             </InputGroupAddon>
           </InputGroup>
