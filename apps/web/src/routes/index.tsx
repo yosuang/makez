@@ -29,7 +29,6 @@ function Console() {
   const [draft, setDraft] = useState("");
   const [tasks, setTasks] = useState<Task[]>([]);
   const [active, setActive] = useState("");
-  const [search, setSearch] = useState("");
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [listError, setListError] = useState("");
   const [loading, setLoading] = useState(Boolean(storedToken.current.trim()));
@@ -154,8 +153,6 @@ function Console() {
       <TaskSidebar
         tasks={tasks}
         active={active}
-        search={search}
-        onSearch={setSearch}
         onSelect={select}
         connected={Boolean(token)}
         savedKey={Boolean(savedToken.trim())}
