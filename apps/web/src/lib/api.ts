@@ -41,72 +41,81 @@ export class APIError extends Error {
   }
 }
 
-// Local makez listens here. The address is the server root, not a /v1 path.
-export const defaultAPIBaseURL = "http://127.0.0.1:8088";
+// Local makez listens here when VITE_MAKEZ_SERVER_URL is unset. The value is the
+// server root, not a /v1 path, and is fixed for the built console.
+const fallbackAPIBaseURL = "http://127.0.0.1:8088";
+const tokenKey = "makez.token";
+const legacyConnectionKey = "makez.connection";
 
-const connectionKey = "makez.connection";
-
-export interface APIAuth {
-  baseUrl: string;
-  token: string;
+function configuredBaseURL(): string {
+  const raw = import.meta.env.VITE_MAKEZ_SERVER_URL;
+  const trimmed = typeof raw === "string" ? raw.trim() : "";
+  return assertBaseURL(trimmed || fallbackAPIBaseURL);
 }
 
-export function readConnection(): APIAuth {
-  const fallback: APIAuth = { baseUrl: defaultAPIBaseURL, token: "" };
+function assertBaseURL(value: string): string {
+  let base: URL;
   try {
-    const raw = localStorage.getItem(connectionKey);
-    if (!raw) return fallback;
-    const parsed = JSON.parse(raw) as Partial<APIAuth>;
-    return {
-      baseUrl: typeof parsed.baseUrl === "string" ? parsed.baseUrl : fallback.baseUrl,
-      token: typeof parsed.token === "string" ? parsed.token : "",
-    };
+    base = new URL(value);
   } catch {
-    return fallback;
+    throw new Error("VITE_MAKEZ_SERVER_URL is not a valid URL");
+  }
+  if (base.protocol !== "http:" && base.protocol !== "https:") {
+    throw new Error("VITE_MAKEZ_SERVER_URL must use http or https");
+  }
+  if (base.username || base.password) {
+    throw new Error("VITE_MAKEZ_SERVER_URL cannot include a username or password");
+  }
+  return value;
+}
+
+export const apiBaseURL = configuredBaseURL();
+
+export function readToken(): string {
+  try {
+    const current = localStorage.getItem(tokenKey);
+    if (typeof current === "string") return current;
+    const legacy = localStorage.getItem(legacyConnectionKey);
+    if (!legacy) return "";
+    const parsed = JSON.parse(legacy) as { token?: unknown };
+    const token = typeof parsed.token === "string" ? parsed.token : "";
+    if (token) localStorage.setItem(tokenKey, token);
+    // Drop the old record so a stored server address cannot override the build.
+    localStorage.removeItem(legacyConnectionKey);
+    return token;
+  } catch {
+    return "";
   }
 }
 
-export function writeConnection(auth: APIAuth) {
+export function writeToken(token: string) {
   try {
-    localStorage.setItem(
-      connectionKey,
-      JSON.stringify({ baseUrl: auth.baseUrl.trim(), token: auth.token.trim() }),
-    );
+    const trimmed = token.trim();
+    if (trimmed) localStorage.setItem(tokenKey, trimmed);
+    else localStorage.removeItem(tokenKey);
+    localStorage.removeItem(legacyConnectionKey);
   } catch {
     // Private mode can block storage. The in-memory session still works for this page.
   }
 }
 
-export function apiURL(baseUrl: string, path: string) {
-  const trimmed = baseUrl.trim();
-  if (!trimmed) throw new APIError("Enter the makez server address", 0);
-  let base: URL;
-  try {
-    base = new URL(trimmed);
-  } catch {
-    throw new APIError("That makez server address is invalid", 0);
-  }
-  if (base.protocol !== "http:" && base.protocol !== "https:") {
-    throw new APIError("The makez server address must use http or https", 0);
-  }
-  if (base.username || base.password) {
-    throw new APIError("The makez server address cannot include a username or password", 0);
-  }
+export function apiURL(path: string) {
+  const base = new URL(apiBaseURL);
   const prefix = base.pathname.replace(/\/+$/, "");
   const suffix = path.startsWith("/") ? path : `/${path}`;
   return `${base.origin}${prefix}${suffix}`;
 }
 
-export async function api(auth: APIAuth, path: string, options: RequestInit = {}) {
+export async function api(token: string, path: string, options: RequestInit = {}) {
   const headers = new Headers(options.headers);
-  headers.set("Authorization", `Bearer ${auth.token}`);
+  headers.set("Authorization", `Bearer ${token}`);
   if (options.body) headers.set("Content-Type", "application/json");
   let response: Response;
   try {
-    response = await fetch(apiURL(auth.baseUrl, path), { ...options, headers });
+    response = await fetch(apiURL(path), { ...options, headers });
   } catch (err) {
     if (options.signal?.aborted) throw err;
-    throw new APIError("Cannot reach the makez server. Check the address and try again.", 0);
+    throw new APIError("Cannot reach the makez server. Try again.", 0);
   }
   if (!response.ok) {
     const body = (await response.json().catch(() => ({}))) as { error?: string };
@@ -161,4 +170,8 @@ export async function readEvents(
     await reader.cancel().catch(() => {});
     reader.releaseLock();
   }
+}
+
+export function isAbort(err: unknown) {
+  return err instanceof Error && err.name === "AbortError";
 }

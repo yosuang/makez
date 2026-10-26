@@ -1,8 +1,12 @@
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { RouterProvider } from "@tanstack/react-router";
+import { applyTheme, readTheme, watchSystemTheme } from "@/lib/theme";
 import { getRouter } from "./router";
 import "./styles.css";
+
+applyTheme(readTheme());
+watchSystemTheme();
 
 const router = getRouter();
 const root = document.getElementById("root");
