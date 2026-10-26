@@ -1,8 +1,21 @@
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import { ArrowUp, Bot, Clock, KeyRound, LoaderCircle } from "lucide-react";
 import { Button } from "@makez/ui/components/button";
-import { Input } from "@makez/ui/components/input";
-import { Textarea } from "@makez/ui/components/textarea";
+import {
+  InputGroup,
+  InputGroupAddon,
+  InputGroupButton,
+  InputGroupInput,
+  InputGroupText,
+  InputGroupTextarea,
+} from "@makez/ui/components/input-group";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@makez/ui/components/select";
 import { api, type Agent, type Task } from "@/lib/api";
 import { message } from "@/lib/format";
 
@@ -82,101 +95,103 @@ export function NewTask({
         <h1 className="mb-6 text-center text-2xl font-medium tracking-tight">
           What should we run?
         </h1>
-        <form onSubmit={submit} className="rounded-xl border border-border bg-surface-raised">
-          <label className="sr-only" htmlFor="prompt">
-            Request
-          </label>
-          <Textarea
-            id="prompt"
-            placeholder="Describe the goal and the PR or artifact you want."
-            value={draft}
-            onChange={(event) => onDraftChange(event.target.value)}
-            required
-            disabled={busy}
-            autoFocus
-            className="min-h-36 resize-y border-0 bg-transparent px-4 py-4 shadow-none focus-visible:ring-0"
-          />
-          <div className="flex flex-wrap items-center gap-2 px-3 pb-3">
-            <label className="inline-flex h-8 max-w-full items-center gap-1.5 rounded-full border border-border bg-background px-2.5 text-xs text-muted-foreground">
-              <Bot className="size-3.5 shrink-0" />
-              <span className="sr-only" id="agent-label">
-                Agent
-              </span>
-              <select
-                aria-labelledby="agent-label"
-                value={agent}
-                onChange={(event) => setAgent(event.target.value)}
-                disabled={!token || busy}
-                className="max-w-44 bg-transparent text-foreground outline-none"
+        <form onSubmit={submit}>
+          <InputGroup className="h-auto rounded-xl">
+            <InputGroupTextarea
+              id="prompt"
+              placeholder="Describe the goal and the PR or artifact you want."
+              value={draft}
+              onChange={(event) => onDraftChange(event.target.value)}
+              required
+              disabled={busy}
+              autoFocus
+              className="min-h-36 px-4 py-3"
+            />
+            <InputGroupAddon align="block-end" className="flex-wrap">
+              <Select
+                value={agent || null}
+                onValueChange={(value) => {
+                  if (value) setAgent(value);
+                }}
+                disabled={!token || busy || !agents.length}
               >
-                {!agents.length && <option value="">No agent</option>}
-                {agents.map((item) => (
-                  <option key={`${item.ID}@${item.Version}`} value={`${item.ID}@${item.Version}`}>
-                    {item.ID}@{item.Version}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <label className="inline-flex h-8 items-center gap-1.5 rounded-full border border-border bg-background px-2.5 text-xs text-muted-foreground">
-              <Clock className="size-3.5 shrink-0" />
-              Time
-              <Input
-                id="timeout"
-                aria-label="Time limit in seconds"
-                type="number"
-                min="5"
-                max="5400"
-                step="1"
-                required
-                value={timeout}
-                onChange={(event) => setTimeoutValue(event.target.value)}
-                disabled={busy}
-                className="h-6 w-14 border-0 bg-transparent px-1 text-xs shadow-none focus-visible:ring-0"
-              />
-              <span>s</span>
-            </label>
-            {agent.startsWith("demo@") && (
-              <label className="inline-flex h-8 items-center gap-1.5 rounded-full border border-border bg-background px-2.5 text-xs text-muted-foreground">
-                Demo
-                <Input
-                  id="delay"
-                  aria-label="Demo duration in seconds"
+                <SelectTrigger type="button" size="sm" aria-label="Agent" className="max-w-52">
+                  <Bot />
+                  <SelectValue placeholder="No agent" />
+                </SelectTrigger>
+                <SelectContent align="start">
+                  {agents.map((item) => (
+                    <SelectItem
+                      key={`${item.ID}@${item.Version}`}
+                      value={`${item.ID}@${item.Version}`}
+                    >
+                      {item.ID}@{item.Version}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <InputGroup className="w-36">
+                <InputGroupAddon>
+                  <Clock />
+                  <InputGroupText>Time</InputGroupText>
+                </InputGroupAddon>
+                <InputGroupInput
+                  id="timeout"
+                  aria-label="Time limit in seconds"
                   type="number"
-                  min="0"
-                  max="300"
-                  step="1"
+                  min={5}
+                  max={5400}
+                  step={1}
                   required
-                  value={delay}
-                  onChange={(event) => setDelay(event.target.value)}
+                  value={timeout}
+                  onChange={(event) => setTimeoutValue(event.target.value)}
                   disabled={busy}
-                  className="h-6 w-14 border-0 bg-transparent px-1 text-xs shadow-none focus-visible:ring-0"
                 />
-                <span>s</span>
-              </label>
-            )}
-            {!token && (
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                className="rounded-full"
-                onClick={onAccess}
+                <InputGroupAddon align="inline-end">
+                  <InputGroupText>s</InputGroupText>
+                </InputGroupAddon>
+              </InputGroup>
+              {agent.startsWith("demo@") && (
+                <InputGroup className="w-36">
+                  <InputGroupAddon>
+                    <InputGroupText>Demo</InputGroupText>
+                  </InputGroupAddon>
+                  <InputGroupInput
+                    id="delay"
+                    aria-label="Demo duration in seconds"
+                    type="number"
+                    min={0}
+                    max={300}
+                    step={1}
+                    required
+                    value={delay}
+                    onChange={(event) => setDelay(event.target.value)}
+                    disabled={busy}
+                  />
+                  <InputGroupAddon align="inline-end">
+                    <InputGroupText>s</InputGroupText>
+                  </InputGroupAddon>
+                </InputGroup>
+              )}
+              {!token && (
+                <Button type="button" variant="outline" size="sm" onClick={onAccess}>
+                  <KeyRound />
+                  Access workspace
+                </Button>
+              )}
+              <InputGroupButton
+                type="submit"
+                variant="default"
+                size="icon-sm"
+                className="ml-auto rounded-full"
+                aria-label="Submit task"
+                title="Submit task"
+                disabled={busy || !token || !agent || !draft.trim()}
               >
-                <KeyRound />
-                Access workspace
-              </Button>
-            )}
-            <Button
-              type="submit"
-              size="icon"
-              className="ml-auto rounded-full"
-              aria-label="Submit task"
-              title="Submit task"
-              disabled={busy || !token || !agent || !draft.trim()}
-            >
-              {busy ? <LoaderCircle className="animate-spin" /> : <ArrowUp />}
-            </Button>
-          </div>
+                {busy ? <LoaderCircle className="animate-spin" /> : <ArrowUp />}
+              </InputGroupButton>
+            </InputGroupAddon>
+          </InputGroup>
         </form>
         {(error || connectError) && (
           <p className="mt-3 text-sm text-destructive" role="alert">
