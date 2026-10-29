@@ -25,6 +25,7 @@ import (
 
 type apiFixture struct {
 	databaseURL string
+	artifactDir string
 	db          *store.Store
 	files       *artifact.Store
 	handler     http.Handler
@@ -94,7 +95,8 @@ func apiTestServer(t *testing.T) *apiFixture {
 		t.Fatal(err)
 	}
 	t.Log("PostgreSQL integration fixture ready")
-	files, err := artifact.New(t.TempDir())
+	artifactDir := t.TempDir()
+	files, err := artifact.New(artifactDir)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -108,7 +110,7 @@ func apiTestServer(t *testing.T) *apiFixture {
 	if err = db.RegisterMachines(ctx, s.Keys); err != nil {
 		t.Fatal(err)
 	}
-	return &apiFixture{databaseURL: u.String(), db: db, files: files, handler: s.Handler(), workspace: workspace, token: "test-machine-token-a"}
+	return &apiFixture{artifactDir: artifactDir, databaseURL: u.String(), db: db, files: files, handler: s.Handler(), workspace: workspace, token: "test-machine-token-a"}
 }
 func (f *apiFixture) request(t *testing.T, method, route, body, key, token string) *httptest.ResponseRecorder {
 	t.Helper()

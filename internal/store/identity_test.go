@@ -374,3 +374,26 @@ func TestDisabledAdminCannotSatisfyLastAdminInvariant(t *testing.T) {
 		t.Fatalf("disabled Admin counted as effective administrator: %v", err)
 	}
 }
+
+func TestSessionExpiryDoesNotRevokeTaskPrincipal(t *testing.T) {
+	s, _ := testStore(t)
+	p, ws := loginUser(t, s, "expired-session-task")
+	ctx := WithPrincipal(t.Context(), p)
+	task, _, err := s.Submit(ctx, ws, "accepted-before-expiry", input())
+	if err != nil {
+		t.Fatal(err)
+	}
+	pair, err := s.CreateSession(ctx, p.ID, DefaultSessionPolicy())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = s.pool.Exec(ctx, `UPDATE makez_sessions SET expires_at=created_at+interval '1 microsecond',idle_expires_at=created_at+interval '1 microsecond'`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = s.AuthenticateAccess(ctx, pair.Access); !errors.Is(err, ErrUnauthenticated) {
+		t.Fatal("expired session accepted", err)
+	}
+	if err = s.AdmitTaskAction(ctx, ws, task.ID, "launch"); err != nil {
+		t.Fatal("session expiry canceled current task authority", err)
+	}
+}

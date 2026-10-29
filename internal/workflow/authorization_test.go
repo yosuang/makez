@@ -5,7 +5,9 @@ import (
 	"testing"
 
 	"github.com/makez-dev/makez/internal/core"
+	"github.com/makez-dev/makez/internal/store"
 	"go.temporal.io/sdk/temporal"
+	"go.temporal.io/sdk/testsuite"
 )
 
 func revokeTaskMachine(t *testing.T, a *Activities) {
@@ -65,5 +67,32 @@ func TestCleanupStillRunsAfterPrincipalRevocation(t *testing.T) {
 	}
 	if err := a.Reap(t.Context(), Input{WorkspaceID: "foreign", TaskID: task.ID}); err == nil {
 		t.Fatal("cross-workspace cleanup accepted")
+	}
+}
+
+func TestRecoveryFinalizesAfterPrincipalRevocation(t *testing.T) {
+	db := activityStore(t)
+	task := activityTask(t, db, true)
+	provider := &finalizerProvider{}
+	a := &Activities{DB: db, Provider: provider}
+	sandbox := core.SandboxRef{BackendID: "test-backend", ID: "existing", Key: key(task, "sandbox")}
+	if err := db.UpdateRun(t.Context(), task.Run.ID, store.RunUpdate{State: new(core.RunStopping), Sandbox: &sandbox}); err != nil {
+		t.Fatal(err)
+	}
+	prepared := store.PreparedResult{State: core.TaskFailed, Reason: "WORKFLOW_INTERRUPTED"}
+	if err := db.UpdateRun(t.Context(), task.Run.ID, store.RunUpdate{State: new(core.RunFinalizing), VerifiedStopped: new(true), Result: &prepared}); err != nil {
+		t.Fatal(err)
+	}
+	revokeTaskMachine(t, a)
+	var suite testsuite.WorkflowTestSuite
+	env := suite.NewTestWorkflowEnvironment()
+	env.RegisterActivity(a.Finalize)
+	env.ExecuteWorkflow(Recovery, Input{WorkspaceID: task.WorkspaceID, TaskID: task.ID})
+	if err := env.GetWorkflowError(); err != nil {
+		t.Fatal(err)
+	}
+	got, err := db.Get(t.Context(), task.WorkspaceID, task.ID)
+	if err != nil || got.State != core.TaskFailed || got.Run.Cleanup != core.CleanupDone || len(provider.deleted) != 1 || provider.deleted[0] != key(task, "sandbox") {
+		t.Fatal("recovery failed its scoped cleanup", err)
 	}
 }
