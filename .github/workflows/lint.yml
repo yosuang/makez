@@ -20,3 +20,5 @@ jobs:
       - uses: jdx/mise-action@v5
       - run: mise run lint
       - run: mise run fmt-check
+      - run: mise run sqlc-check
+      - run: mise run swagger-check

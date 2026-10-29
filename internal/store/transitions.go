@@ -14,6 +14,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/makez-dev/makez/internal/core"
+	"github.com/makez-dev/makez/internal/store/dbgen"
 )
 
 func allowedRunTransition(from, to core.RunState) bool {
@@ -40,7 +41,7 @@ func (s *Store) UpdateRun(ctx context.Context, id string, u RunUpdate) error {
 		return err
 	}
 	defer tx.Rollback(ctx) //nolint:errcheck // Commit closes the transaction; pgx discards the connection on rollback failure.
-	r, err := scanRun(tx.QueryRow(ctx, "SELECT "+runColumns+" FROM makez_runs WHERE id=$1 FOR UPDATE", id))
+	r, err := runFromRow(dbgen.New(tx).LockRun(ctx, id))
 	if err != nil {
 		return err
 	}
@@ -106,13 +107,13 @@ func (s *Store) UpdateRun(ctx context.Context, id string, u RunUpdate) error {
 		r.Result = u.Result
 	}
 	// Cursor commits during observation use AppendOutput, which also fences stale observers.
-	_, err = tx.Exec(ctx, `UPDATE makez_runs SET state=$2,sandbox=$3,process=$4,cursor=$5,parser_state=$6,process_exit=$7,cleanup=$8,verified_stopped=$9,prepared_result=$10,version=version+1 WHERE id=$1`, id, r.State, jsonValue(r.Sandbox), jsonValue(r.Process), r.Cursor, nonNil(r.ParserState), jsonValue(r.Exit), r.Cleanup, r.VerifiedStopped, jsonValue(r.Result))
+	_, err = dbgen.New(tx).UpdateExecution(ctx, dbgen.UpdateExecutionParams{ID: id, State: string(r.State), Sandbox: jsonValue(r.Sandbox), Process: jsonValue(r.Process), Cursor: r.Cursor, ParserState: nonNil(r.ParserState), ProcessExit: jsonValue(r.Exit), Cleanup: string(r.Cleanup), VerifiedStopped: r.VerifiedStopped, PreparedResult: jsonValue(r.Result)})
 	if err != nil {
 		return err
 	}
 	return tx.Commit(ctx)
 }
-func jsonValue(value any) any {
+func jsonValue(value any) []byte {
 	encoded, _ := json.Marshal(value)
 	if string(encoded) == "null" {
 		return nil
@@ -148,7 +149,7 @@ func (s *Store) Publish(ctx context.Context, workspace, id string, state core.Ta
 			return ErrConflict
 		}
 	} else {
-		r, err := scanRun(tx.QueryRow(ctx, "SELECT "+runColumns+" FROM makez_runs WHERE id=$1 FOR UPDATE", t.Run.ID))
+		r, err := runFromRow(dbgen.New(tx).LockRun(ctx, t.Run.ID))
 		if err != nil {
 			return err
 		}
@@ -181,12 +182,12 @@ func (s *Store) Publish(ctx context.Context, workspace, id string, state core.Ta
 			if artifact.Path == "" || path.IsAbs(artifact.Path) || path.Clean(artifact.Path) != artifact.Path || strings.HasPrefix(artifact.Path, "../") || artifact.Path == ".." || artifact.Path == "." || strings.ContainsAny(artifact.Path, "\\\x00") || artifact.StorageKey == "" || artifact.Size < 0 || len(artifact.SHA256) != 64 {
 				return fmt.Errorf("invalid artifact metadata")
 			}
-			_, err = tx.Exec(ctx, `INSERT INTO makez_artifacts(id,run_id,path,storage_key,sha256,media_type,size) VALUES($1,$2,$3,$4,$5,$6,$7)`, artifact.ID, r.ID, artifact.Path, artifact.StorageKey, artifact.SHA256, artifact.MediaType, artifact.Size)
+			_, err = dbgen.New(tx).InsertArtifact(ctx, dbgen.InsertArtifactParams{ID: artifact.ID, RunID: r.ID, Path: artifact.Path, StorageKey: artifact.StorageKey, Sha256: artifact.SHA256, MediaType: artifact.MediaType, Size: artifact.Size})
 			if err != nil {
 				return err
 			}
 		}
-		_, err = tx.Exec(ctx, `UPDATE makez_runs SET state=$2,verified_stopped=$3,cleanup=$4,version=version+1 WHERE id=$1`, r.ID, core.RunState(state), verified, cleanup)
+		_, err = dbgen.New(tx).PublishExecution(ctx, dbgen.PublishExecutionParams{ID: r.ID, State: string(core.RunState(state)), VerifiedStopped: verified, Cleanup: string(cleanup)})
 		if err != nil {
 			return err
 		}
@@ -196,7 +197,7 @@ func (s *Store) Publish(ctx context.Context, workspace, id string, state core.Ta
 			}
 		}
 	}
-	_, err = tx.Exec(ctx, `UPDATE makez_tasks SET state=$2,reason=$3,version=version+1 WHERE id=$1`, id, state, reason)
+	_, err = dbgen.New(tx).PublishTaskState(ctx, dbgen.PublishTaskStateParams{ID: id, State: string(state), Reason: reason})
 	if err != nil {
 		return err
 	}
@@ -216,11 +217,11 @@ func (s *Store) SetCleanup(ctx context.Context, id string, state core.CleanupSta
 	if state != core.CleanupDone && state != core.CleanupPending && state != core.CleanupBlocked && state != core.CleanupNotRequired {
 		return ErrConflict
 	}
-	tag, err := s.pool.Exec(ctx, `UPDATE makez_runs SET cleanup=$2,version=version+1 WHERE id=$1 AND (cleanup!='DONE' OR $2='DONE')`, id, state)
+	tag, err := dbgen.New(s.pool).SetCleanupState(ctx, dbgen.SetCleanupStateParams{ID: id, Cleanup: string(state)})
 	if err != nil {
 		return err
 	}
-	if tag.RowsAffected() == 0 {
+	if tag == 0 {
 		return ErrConflict
 	}
 	return nil
@@ -236,16 +237,16 @@ func (s *Store) BeginOperation(ctx context.Context, runID, step, hash string) (s
 		return "", false, err
 	}
 	defer tx.Rollback(ctx) //nolint:errcheck // Commit closes the transaction; pgx discards the connection on rollback failure.
-	var taskState core.TaskState
-	var deadline time.Time
-	if err = tx.QueryRow(ctx, `SELECT t.state,t.deadline FROM makez_tasks t JOIN makez_runs r ON r.task_id=t.id WHERE r.id=$1 FOR UPDATE OF t`, runID).Scan(&taskState, &deadline); err != nil {
+	locked, err := dbgen.New(tx).LockOperationTask(ctx, runID)
+	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			err = ErrNotFound
 		}
 		return "", false, err
 	}
-	var oldHash, phase string
-	err = tx.QueryRow(ctx, `SELECT request_hash,phase FROM makez_operations WHERE run_id=$1 AND step=$2`, runID, step).Scan(&oldHash, &phase)
+	taskState, deadline := core.TaskState(locked.State), locked.Deadline.Time
+	operation, err := dbgen.New(tx).GetOperation(ctx, dbgen.GetOperationParams{RunID: runID, Step: step})
+	oldHash, phase := operation.RequestHash, operation.Phase
 	if err == nil {
 		if oldHash != hash {
 			return phase, false, ErrConflict
@@ -258,7 +259,7 @@ func (s *Store) BeginOperation(ctx context.Context, runID, step, hash string) (s
 	if taskState != core.TaskRunning || !deadline.After(time.Now()) {
 		return "", false, ErrConflict
 	}
-	_, err = tx.Exec(ctx, `INSERT INTO makez_operations(run_id,step,request_hash,phase) VALUES($1,$2,$3,'DISPATCHING')`, runID, step, hash)
+	_, err = dbgen.New(tx).InsertOperation(ctx, dbgen.InsertOperationParams{RunID: runID, Step: step, RequestHash: hash})
 	if err != nil {
 		return "", false, err
 	}
@@ -270,11 +271,11 @@ func (s *Store) BeginOperation(ctx context.Context, runID, step, hash string) (s
 
 // ConfirmOperation records the reconciled outcome of a keyed external operation.
 func (s *Store) ConfirmOperation(ctx context.Context, runID, step string) error {
-	tag, err := s.pool.Exec(ctx, `UPDATE makez_operations SET phase='CONFIRMED',updated_at=now() WHERE run_id=$1 AND step=$2`, runID, step)
+	tag, err := dbgen.New(s.pool).ConfirmOperationState(ctx, dbgen.ConfirmOperationStateParams{RunID: runID, Step: step})
 	if err != nil {
 		return err
 	}
-	if tag.RowsAffected() == 0 {
+	if tag == 0 {
 		return ErrNotFound
 	}
 	return nil
@@ -282,8 +283,8 @@ func (s *Store) ConfirmOperation(ctx context.Context, runID, step string) error 
 
 // OperationPhase is read-only: it must never claim a new external mutation.
 func (s *Store) OperationPhase(ctx context.Context, runID, step string) (string, error) {
-	var phase string
-	err := s.pool.QueryRow(ctx, `SELECT phase FROM makez_operations WHERE run_id=$1 AND step=$2`, runID, step).Scan(&phase)
+	row, err := dbgen.New(s.pool).GetOperation(ctx, dbgen.GetOperationParams{RunID: runID, Step: step})
+	phase := row.Phase
 	if errors.Is(err, pgx.ErrNoRows) {
 		return "", nil
 	}
@@ -305,8 +306,7 @@ func (s *Store) FreezePlan(ctx context.Context, runID string, plan core.AgentPla
 	if err != nil || len(encoded) > 1<<20 {
 		return core.AgentPlan{}, ErrInvalidInput
 	}
-	var stored []byte
-	err = s.pool.QueryRow(ctx, `UPDATE makez_runs SET agent_plan=COALESCE(agent_plan,$2::jsonb),version=version+CASE WHEN agent_plan IS NULL THEN 1 ELSE 0 END WHERE id=$1 AND (agent_plan IS NOT NULL OR state IN ('PREPARING','STARTING')) RETURNING agent_plan`, runID, encoded).Scan(&stored)
+	stored, err := dbgen.New(s.pool).FreezeAgentPlan(ctx, dbgen.FreezeAgentPlanParams{ID: runID, Column2: encoded})
 	if errors.Is(err, pgx.ErrNoRows) {
 		return core.AgentPlan{}, ErrConflict
 	}

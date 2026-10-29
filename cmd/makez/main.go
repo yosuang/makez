@@ -48,6 +48,26 @@ func run() error {
 	if len(os.Args) > 1 {
 		mode = os.Args[1]
 	}
+	if mode == "revoke-machine" || mode == "repair-bootstrap" || mode == "replay-outbox" || mode == "verify-artifacts" {
+		return maintenance(mode, os.Args[2:])
+	}
+	if mode == "migrate" {
+		if os.Getenv("MAKEZ_DATABASE_URL") == "" {
+			return errors.New("MAKEZ_DATABASE_URL is required for migration")
+		}
+		adopt := len(os.Args) == 3 && os.Args[2] == "--adopt-legacy"
+		if len(os.Args) > 2 && !adopt {
+			return errors.New("usage: makez migrate [--adopt-legacy]")
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+		defer cancel()
+		db, err := store.Open(ctx, os.Getenv("MAKEZ_DATABASE_URL"))
+		if err != nil {
+			return err
+		}
+		defer db.Close()
+		return db.MigrateLegacy(ctx, adopt)
+	}
 	if mode != "all" && mode != "api" && mode != "worker" {
 		return fmt.Errorf("usage: makez [all|api|worker]")
 	}
@@ -84,7 +104,7 @@ func run() error {
 		return err
 	}
 	defer db.Close()
-	if err = db.Migrate(ctx); err != nil {
+	if err = db.CheckSchema(ctx); err != nil {
 		return err
 	}
 	provider, shutdownMetrics, err := configureMetrics(ctx)
@@ -134,22 +154,34 @@ func run() error {
 		}
 		defer w.Stop()
 	}
+	google, origins, policy, err := configureAuth(ctx, config.Development)
+	if err != nil {
+		return err
+	}
 	var keys map[string]string
 	if mode != "worker" {
-		if err = json.Unmarshal([]byte(os.Getenv("MAKEZ_API_KEYS")), &keys); err != nil || len(keys) == 0 {
-			return errors.New("MAKEZ_API_KEYS must be a JSON object mapping API key to workspace ID")
+		if raw := os.Getenv("MAKEZ_API_KEYS"); raw != "" {
+			if err = json.Unmarshal([]byte(raw), &keys); err != nil {
+				return errors.New("MAKEZ_API_KEYS must be a JSON object mapping API key to workspace ID")
+			}
+		}
+		if len(keys) == 0 && google == nil {
+			return errors.New("configure Google login or machine API keys")
 		}
 		for k, ws := range keys {
 			if len(k) < 16 || ws == "" {
 				return errors.New("API keys must contain at least 16 characters and a workspace ID")
 			}
 		}
+		if err = db.RegisterMachines(ctx, keys); err != nil {
+			return err
+		}
 		dispatchCtx, stopDispatch := context.WithCancel(ctx)
 		dispatchDone := make(chan struct{})
 		go func() { defer close(dispatchDone); orchestration.Dispatch(dispatchCtx, db, tc) }()
 		defer func() { stopDispatch(); <-dispatchDone }()
 	}
-	handler := (&api.Server{DB: db, Artifacts: files, Keys: keys, Agents: agents, Secrets: secrets, Metrics: metrics, Development: config.Development, OperationsOnly: mode == "worker", Shutdown: ctx, Ready: func(check context.Context) error {
+	handler := (&api.Server{DB: db, Google: google, AllowedOrigins: origins, SessionPolicy: policy, Artifacts: files, Keys: keys, Agents: agents, Secrets: secrets, Metrics: metrics, Development: config.Development, OperationsOnly: mode == "worker", Shutdown: ctx, Ready: func(check context.Context) error {
 		if err := db.Ping(check); err != nil {
 			return err
 		}

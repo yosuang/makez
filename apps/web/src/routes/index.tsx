@@ -1,5 +1,5 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { Menu } from "lucide-react";
 import {
   Breadcrumb,
@@ -9,82 +9,99 @@ import {
   BreadcrumbSeparator,
 } from "@makez/ui/components/breadcrumb";
 import { Button } from "@makez/ui/components/button";
-import { api, isAbort, readToken, writeToken, type Agent, type Task } from "@/lib/api";
+import {
+  api,
+  isAbort,
+  signIn,
+  logout,
+  sessionProfile,
+  selectWorkspace,
+  onSessionChange,
+  sessionScope,
+  currentWorkspace,
+  canWrite,
+  type User,
+  type Workspace,
+  type Agent,
+  type Task,
+} from "@/lib/api";
 import { message } from "@/lib/format";
 import { useTask } from "@/lib/use-task";
 import { NewTask } from "@/components/new-task";
-import { SettingsDialog, type SettingsPage } from "@/components/settings-dialog";
+import { SettingsDialog } from "@/components/settings-dialog";
 import { TaskDetail } from "@/components/task-detail";
 import { TaskSidebar } from "@/components/task-sidebar";
 
 export const Route = createFileRoute("/")({ component: Console });
 
 function Console() {
-  const storedToken = useRef(readToken());
-  const [savedToken, setSavedToken] = useState(storedToken.current);
   const [token, setToken] = useState("");
+  const [user, setUser] = useState<User>();
+  const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
+  const [workspaceID, setWorkspaceID] = useState("");
   const [agents, setAgents] = useState<Agent[]>([]);
   const [connectError, setConnectError] = useState("");
-  const [booting, setBooting] = useState(Boolean(storedToken.current.trim()));
+  const [booting, setBooting] = useState(true);
   const [draft, setDraft] = useState("");
   const [tasks, setTasks] = useState<Task[]>([]);
   const [active, setActive] = useState("");
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [listError, setListError] = useState("");
-  const [loading, setLoading] = useState(Boolean(storedToken.current.trim()));
+  const [loading, setLoading] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [settingsPage, setSettingsPage] = useState<SettingsPage>("appearance");
-  const connection = useRef<AbortController | null>(null);
-  const previousToken = useRef("");
 
-  const connect = useCallback(async (next: string) => {
-    connection.current?.abort();
-    const controller = new AbortController();
-    connection.current = controller;
-    try {
-      const list: Agent[] | null = await (
-        await api(next, "/v1/agents", { signal: controller.signal })
-      ).json();
-      if (controller.signal.aborted) throw new DOMException("Aborted", "AbortError");
-      writeToken(next);
-      setSavedToken(next);
-      setToken(next);
-      setAgents(list ?? []);
-      setConnectError("");
-    } catch (err) {
-      if (controller.signal.aborted || isAbort(err)) {
-        throw new DOMException("Aborted", "AbortError");
-      }
-      throw err;
-    }
+  useEffect(
+    () =>
+      onSessionChange(() => {
+        setToken(sessionScope());
+        setWorkspaceID(currentWorkspace()?.id ?? "");
+        setActive("");
+        setTasks([]);
+        setAgents([]);
+        setListError("");
+        if (!sessionScope()) {
+          setUser(undefined);
+          setWorkspaces([]);
+        }
+      }),
+    [],
+  );
+
+  useEffect(() => {
+    let cancelled = false;
+    void sessionProfile()
+      .then(({ user, workspaces }) => {
+        if (cancelled) return;
+        setUser(user);
+        setWorkspaces(workspaces);
+        if (workspaces[0]) {
+          selectWorkspace(workspaces[0]);
+          setWorkspaceID(workspaces[0].id);
+        }
+      })
+      .catch((err) => {
+        if (!cancelled) setConnectError(message(err));
+      })
+      .finally(() => {
+        if (!cancelled) setBooting(false);
+      });
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   useEffect(() => {
-    const initial = storedToken.current.trim();
-    if (!initial) return;
-    let cancelled = false;
-    void (async () => {
-      try {
-        await connect(initial);
-      } catch (err) {
-        if (!cancelled && !isAbort(err)) setConnectError(message(err));
-      } finally {
-        if (!cancelled) setBooting(false);
-      }
-    })();
-    return () => {
-      cancelled = true;
-      connection.current?.abort();
-    };
-  }, [connect]);
-
-  useEffect(() => {
-    if (previousToken.current && previousToken.current !== token) {
-      setActive("");
-      setTasks([]);
-      setListError("");
-    }
-    previousToken.current = token;
+    if (!token) return;
+    const controller = new AbortController();
+    void api(token, "/v1/agents", { signal: controller.signal })
+      .then((r) => r.json())
+      .then((list: Agent[]) => {
+        if (!controller.signal.aborted) setAgents(list ?? []);
+      })
+      .catch((err) => {
+        if (!isAbort(err) && !controller.signal.aborted) setConnectError(message(err));
+      });
+    return () => controller.abort();
   }, [token]);
 
   useEffect(() => {
@@ -116,6 +133,35 @@ function Console() {
     };
   }, [token]);
 
+  useEffect(() => {
+    if (!token) return;
+    let cancelled = false;
+    const timer = setInterval(() => {
+      void sessionProfile()
+        .then(({ user, workspaces }) => {
+          if (cancelled) return;
+          setUser(user);
+          setWorkspaces(workspaces);
+          const current = currentWorkspace();
+          const next = workspaces.find((w) => w.id === current?.id) ?? workspaces[0];
+          if (
+            next &&
+            (next.id !== current?.id ||
+              next.role !== current.role ||
+              next.authz_version !== current.authz_version)
+          )
+            selectWorkspace(next);
+        })
+        .catch((err) => {
+          if (!cancelled) setConnectError(message(err));
+        });
+    }, 5000);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, [token]);
+
   const { task, events, artifacts, error, streamState, setTask } = useTask(token, active);
 
   function select(id: string) {
@@ -123,27 +169,12 @@ function Console() {
     setSidebarOpen(false);
   }
 
-  function openSettings(page: SettingsPage) {
-    setSettingsPage(page);
-    setSettingsOpen(true);
-    setSidebarOpen(false);
-  }
-
-  async function saveKey(next: string) {
-    if (!next) {
-      connection.current?.abort();
-      writeToken("");
-      setSavedToken("");
-      setToken("");
-      setAgents([]);
-      setConnectError("");
-      setTasks([]);
-      setActive("");
-      setLoading(false);
-      return;
+  async function signOut(all: boolean) {
+    try {
+      await logout(all);
+    } catch (err) {
+      setConnectError(message(err));
     }
-    await connect(next);
-    setLoading(true);
   }
 
   const current = task ?? tasks.find((item) => item.id === active);
@@ -155,12 +186,12 @@ function Console() {
         active={active}
         onSelect={select}
         connected={Boolean(token)}
-        savedKey={Boolean(savedToken.trim())}
+        savedKey={Boolean(user)}
         loading={booting || (Boolean(token) && loading)}
         error={listError}
         open={sidebarOpen}
         onClose={() => setSidebarOpen(false)}
-        onOpenSettings={() => openSettings("appearance")}
+        onOpenSettings={() => setSettingsOpen(true)}
       />
       <main className="flex min-w-0 flex-1 flex-col">
         <header className="flex h-12 shrink-0 items-center gap-2 border-b border-border px-3 md:px-4">
@@ -184,6 +215,40 @@ function Console() {
               </BreadcrumbItem>
             </BreadcrumbList>
           </Breadcrumb>
+          <div className="ml-auto flex items-center gap-2">
+            {user ? (
+              <>
+                <span className="text-sm">{user.display_name}</span>
+                <select
+                  aria-label="Workspace"
+                  value={workspaceID}
+                  onChange={(event) => {
+                    const next = workspaces.find((w) => w.id === event.target.value);
+                    if (next) {
+                      selectWorkspace(next);
+                      setWorkspaceID(next.id);
+                    }
+                  }}
+                >
+                  {workspaces.map((w) => (
+                    <option key={w.id} value={w.id}>
+                      {w.slug} · {w.role}
+                    </option>
+                  ))}
+                </select>
+                <Button variant="ghost" onClick={() => void signOut(false)}>
+                  Sign out
+                </Button>
+                <Button variant="ghost" onClick={() => void signOut(true)}>
+                  Sign out all
+                </Button>
+              </>
+            ) : (
+              <Button onClick={signIn} disabled={booting}>
+                Sign in with Google
+              </Button>
+            )}
+          </div>
         </header>
         {active ? (
           <TaskDetail
@@ -203,12 +268,13 @@ function Console() {
           />
         ) : (
           <NewTask
-            token={token}
+            token={canWrite() ? token : ""}
+            readOnly={Boolean(token) && !canWrite()}
             agents={agents}
             draft={draft}
             onDraftChange={setDraft}
             connectError={connectError}
-            onAccess={() => openSettings("advanced")}
+            onAccess={signIn}
             onCreated={(created) => {
               setDraft("");
               setTasks((previous) => [
@@ -220,14 +286,7 @@ function Console() {
           />
         )}
       </main>
-      <SettingsDialog
-        open={settingsOpen}
-        page={settingsPage}
-        savedToken={savedToken}
-        onOpenChange={setSettingsOpen}
-        onPageChange={setSettingsPage}
-        onSaveKey={saveKey}
-      />
+      <SettingsDialog open={settingsOpen} onOpenChange={setSettingsOpen} />
     </div>
   );
 }

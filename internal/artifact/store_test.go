@@ -18,6 +18,38 @@ import (
 
 type memoryWorkspace map[string]string
 
+func TestCorruptObjectIsNeverOverwrittenOrDownloaded(t *testing.T) {
+	directory := t.TempDir()
+	archive, err := New(directory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer archive.Close() //nolint:errcheck // Test archive handle.
+	records, err := archive.Archive(t.Context(), "run", memoryWorkspace{"/workspace/a": "original"}, []core.ArtifactCandidate{{Path: "a", Required: true}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := records[0]
+	if f, err := archive.OpenVerified(r.StorageKey, r.SHA256, r.Size+1); err == nil {
+		_ = f.Close()
+		t.Fatal("metadata size mismatch accepted")
+	}
+	if err = os.WriteFile(filepath.Join(directory, r.StorageKey), []byte("corrupt"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if f, err := archive.Open(r.StorageKey); err == nil {
+		_ = f.Close()
+		t.Fatal("corrupted bytes downloaded")
+	}
+	if _, err = archive.Archive(t.Context(), "run", memoryWorkspace{"/workspace/a": "original"}, []core.ArtifactCandidate{{Path: "a", Required: true}}); err == nil {
+		t.Fatal("existing corrupt object overwritten")
+	}
+	data, err := os.ReadFile(filepath.Join(directory, r.StorageKey))
+	if err != nil || string(data) != "corrupt" {
+		t.Fatal("corruption evidence overwritten", err)
+	}
+}
+
 func (w memoryWorkspace) Read(_ context.Context, name string) (io.ReadCloser, error) {
 	data, ok := w[name]
 	if !ok {

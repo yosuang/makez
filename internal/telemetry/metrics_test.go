@@ -51,13 +51,15 @@ func TestInstrumentTypesUnitsValuesAndBuckets(t *testing.T) {
 	m.StreamEnds.Add(ctx, 1, metric.WithAttributes(attribute.String("reason", "terminal")))
 	m.CleanupFailures.Add(ctx, 1)
 	m.OutboxRetries.Add(ctx, 2)
+	m.Authorization(ctx, "read", "allowed")
+	m.ArtifactFailure(ctx, "download")
 	m.Result(ctx, "SUCCEEDED", time.Now().Add(-time.Second))
 	if err := m.RegisterBacklog(func(context.Context) (Backlog, error) { return Backlog{3, 120, 2, 1}, nil }); err != nil {
 		t.Fatal(err)
 	}
 	data := collect(ctx, t, reader)
-	if len(data) != 11 {
-		t.Fatalf("expected all 11 instruments, got %d", len(data))
+	if len(data) != 13 {
+		t.Fatalf("expected all 13 instruments, got %d", len(data))
 	}
 	for _, tc := range []struct {
 		name   string
@@ -89,6 +91,7 @@ func TestInstrumentTypesUnitsValuesAndBuckets(t *testing.T) {
 		value      int64
 		monotonic  bool
 	}{
+		{"makez_authorization_decisions_total", "{decision}", 1, true}, {"makez_artifact_integrity_failures_total", "{failure}", 1, true},
 		{"makez_sse_active", "{connection}", 1, false}, {"makez_sse_disconnects_total", "{connection}", 1, true},
 		{"makez_task_results_total", "{task}", 1, true}, {"makez_cleanup_failures_total", "{attempt}", 1, true}, {"makez_outbox_retries_total", "{attempt}", 2, true},
 	} {
@@ -112,7 +115,7 @@ func TestInstrumentTypesUnitsValuesAndBuckets(t *testing.T) {
 	if len(states) != 2 || states["pending"] != 2 || states["blocked"] != 1 {
 		t.Fatal(states)
 	}
-	allowed := map[attribute.Key]bool{"method": true, "route": true, "status": true, "reason": true, "result": true, "state": true}
+	allowed := map[attribute.Key]bool{"method": true, "route": true, "status": true, "reason": true, "result": true, "state": true, "action": true, "outcome": true, "operation": true}
 	check := func(attrs attribute.Set) {
 		for _, kv := range attrs.ToSlice() {
 			if !allowed[kv.Key] {

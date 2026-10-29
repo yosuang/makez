@@ -19,7 +19,15 @@ import {
   CollapsibleTrigger,
 } from "@makez/ui/components/collapsible";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@makez/ui/components/tabs";
-import { api, eventText, terminal, type Artifact, type RunEvent, type Task } from "@/lib/api";
+import {
+  api,
+  canWrite,
+  eventText,
+  terminal,
+  type Artifact,
+  type RunEvent,
+  type Task,
+} from "@/lib/api";
 import {
   formatBytes,
   formatClock,
@@ -255,7 +263,7 @@ export function TaskDetail({
             <Button
               variant="outline"
               className="mt-2 w-full"
-              disabled={canceling || task.cancel_requested}
+              disabled={canceling || task.cancel_requested || !canWrite()}
               onClick={() => void cancel()}
             >
               {canceling ? <LoaderCircle className="animate-spin" /> : <Square />}

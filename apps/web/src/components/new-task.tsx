@@ -20,6 +20,7 @@ import { message } from "@/lib/format";
 
 export function NewTask({
   token,
+  readOnly = false,
   agents,
   draft,
   onDraftChange,
@@ -28,6 +29,7 @@ export function NewTask({
   onCreated,
 }: {
   token: string;
+  readOnly?: boolean;
   agents: Agent[];
   draft: string;
   onDraftChange: (value: string) => void;
@@ -165,7 +167,7 @@ export function NewTask({
                   <InputGroupText>s</InputGroupText>
                 </>
               )}
-              {!token && (
+              {!token && !readOnly && (
                 <InputGroupButton type="button" variant="ghost" onClick={onAccess}>
                   <KeyRound />
                   Access workspace
@@ -184,6 +186,11 @@ export function NewTask({
             </InputGroupAddon>
           </InputGroup>
         </form>
+        {readOnly && (
+          <p className="mt-3 text-sm text-muted-foreground">
+            This workspace is read-only. Choose another workspace to create tasks.
+          </p>
+        )}
         {(error || connectError) && (
           <p className="mt-3 text-sm text-destructive" role="alert">
             {error || connectError}

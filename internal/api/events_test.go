@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -23,7 +24,7 @@ func TestSSEFlushAndClientDisconnect(t *testing.T) {
 		reason, _ := streamEvents(r.Context(), w, 0, time.Second, func(ctx context.Context, _ int64) (store.Task, []store.Event, error) {
 			<-ctx.Done()
 			return store.Task{}, nil, ctx.Err()
-		}, s)
+		}, s, nil)
 		done <- reason
 	}))
 	defer server.Close()
@@ -60,7 +61,7 @@ func TestSSEDrainsMoreThan500EventsWithoutPollingDelay(t *testing.T) {
 		return store.Task{State: core.TaskSucceeded}, events, nil
 	}
 	rec := httptest.NewRecorder()
-	reason, err := streamEvents(ctx, rec, 100, time.Second, fetch, &Server{})
+	reason, err := streamEvents(ctx, rec, 100, time.Second, fetch, &Server{}, nil)
 	if err != nil || reason != "terminal" {
 		t.Fatalf("reason=%s err=%v", reason, err)
 	}
@@ -90,7 +91,7 @@ func TestSSESlowClientAndBlockedWriteCancellation(t *testing.T) {
 			}
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 				close(started)
-				reason, _ := streamEvents(ctx, w, 0, timeout, fetch, &Server{})
+				reason, _ := streamEvents(ctx, w, 0, timeout, fetch, &Server{}, nil)
 				done <- reason
 			}))
 			defer server.Close()
@@ -137,8 +138,25 @@ func TestSSEAlreadyCanceledIsNotAWriteFailure(t *testing.T) {
 	reason, err := streamEvents(ctx, httptest.NewRecorder(), 0, time.Second, func(context.Context, int64) (store.Task, []store.Event, error) {
 		t.Fatal("canceled stream fetched data")
 		return store.Task{}, nil, nil
-	}, &Server{})
+	}, &Server{}, nil)
 	if err != nil || reason != "canceled" {
 		t.Fatalf("reason=%s err=%v", reason, err)
+	}
+}
+
+func TestSSERechecksPermissionBetweenFrames(t *testing.T) {
+	w := httptest.NewRecorder()
+	checks := 0
+	_, err := streamEvents(t.Context(), w, 0, time.Second, func(context.Context, int64) (store.Task, []store.Event, error) {
+		return store.Task{State: core.TaskSucceeded}, []store.Event{{Seq: 1, Type: "first"}, {Seq: 2, Type: "must-not-send"}}, nil
+	}, &Server{}, func(context.Context) error {
+		checks++
+		if checks >= 4 {
+			return store.ErrForbidden
+		}
+		return nil
+	})
+	if !errors.Is(err, store.ErrForbidden) || !strings.Contains(w.Body.String(), "id: 1") || strings.Contains(w.Body.String(), "id: 2") {
+		t.Fatalf("stream crossed revocation boundary: checks=%d err=%v body=%s", checks, err, w.Body.String())
 	}
 }

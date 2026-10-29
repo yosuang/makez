@@ -101,6 +101,8 @@ type Event struct {
 
 // Outbox contains a durable command awaiting workflow dispatch.
 type Outbox struct {
+	LeaseOwner  string `json:"-"`
+	LeaseToken  int64  `json:"-"`
 	ID          string `json:"id"`
 	WorkspaceID string `json:"workspace_id"`
 	TaskID      string `json:"task_id"`

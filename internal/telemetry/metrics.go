@@ -15,24 +15,26 @@ import (
 
 // Metrics groups application instruments and backlog observation state.
 type Metrics struct {
-	HTTP            metric.Float64Histogram
-	Streams         metric.Int64UpDownCounter
-	StreamEnds      metric.Int64Counter
-	Queue           metric.Float64Histogram
-	Execution       metric.Float64Histogram
-	Results         metric.Int64Counter
-	CleanupFailures metric.Int64Counter
-	OutboxRetries   metric.Int64Counter
-	meter           metric.Meter
-	pending         metric.Int64ObservableGauge
-	oldest          metric.Float64ObservableGauge
-	cleanup         metric.Int64ObservableGauge
+	HTTP                   metric.Float64Histogram
+	Streams                metric.Int64UpDownCounter
+	StreamEnds             metric.Int64Counter
+	Queue                  metric.Float64Histogram
+	Execution              metric.Float64Histogram
+	Results                metric.Int64Counter
+	CleanupFailures        metric.Int64Counter
+	OutboxRetries          metric.Int64Counter
+	AuthorizationDecisions metric.Int64Counter
+	ArtifactFailures       metric.Int64Counter
+	meter                  metric.Meter
+	pending                metric.Int64ObservableGauge
+	oldest                 metric.Float64ObservableGauge
+	cleanup                metric.Int64ObservableGauge
 }
 
 // New creates application instruments using the supplied meter.
 func New(meter metric.Meter) (*Metrics, error) {
 	m := &Metrics{meter: meter}
-	var errs [11]error
+	var errs [13]error
 	m.HTTP, errs[0] = meter.Float64Histogram("makez_http_request_seconds", metric.WithDescription("HTTP request duration including streaming lifetime."), metric.WithUnit("s"), metric.WithExplicitBucketBoundaries(.005, .01, .025, .05, .1, .25, .5, 1, 2.5, 5, 10))
 	m.Streams, errs[1] = meter.Int64UpDownCounter("makez_sse_active", metric.WithDescription("Active SSE connections."), metric.WithUnit("{connection}"))
 	m.StreamEnds, errs[2] = meter.Int64Counter("makez_sse_disconnects_total", metric.WithDescription("SSE closures by bounded reason."), metric.WithUnit("{connection}"))
@@ -45,10 +47,41 @@ func New(meter metric.Meter) (*Metrics, error) {
 	m.pending, errs[8] = meter.Int64ObservableGauge("makez_outbox_pending", metric.WithDescription("Undelivered outbox rows across the installation; do not sum across processes."), metric.WithUnit("{row}"))
 	m.oldest, errs[9] = meter.Float64ObservableGauge("makez_outbox_oldest_seconds", metric.WithDescription("Age of the oldest undelivered outbox row; pre-migration rows are measured from migration."), metric.WithUnit("s"))
 	m.cleanup, errs[10] = meter.Int64ObservableGauge("makez_cleanup_runs", metric.WithDescription("Runs needing cleanup across the installation; do not sum across processes."), metric.WithUnit("{run}"))
+	m.AuthorizationDecisions, errs[11] = meter.Int64Counter("makez_authorization_decisions_total", metric.WithDescription("Current database authorization decisions by bounded action and outcome."), metric.WithUnit("{decision}"))
+	m.ArtifactFailures, errs[12] = meter.Int64Counter("makez_artifact_integrity_failures_total", metric.WithDescription("Rejected artifact reads by bounded operation."), metric.WithUnit("{failure}"))
 	if err := errors.Join(errs[:]...); err != nil {
 		return nil, err
 	}
 	return m, nil
+}
+
+// Authorization records a decision, never identifiers or role cache contents.
+func (m *Metrics) Authorization(ctx context.Context, action, outcome string) {
+	if m == nil {
+		return
+	}
+	switch action {
+	case "read", "write", "members", "worker":
+	default:
+		action = "other"
+	}
+	switch outcome {
+	case "allowed", "denied", "error":
+	default:
+		outcome = "error"
+	}
+	m.AuthorizationDecisions.Add(ctx, 1, metric.WithAttributes(attribute.String("action", action), attribute.String("outcome", outcome)))
+}
+
+// ArtifactFailure records an integrity rejection without exposing storage keys.
+func (m *Metrics) ArtifactFailure(ctx context.Context, operation string) {
+	if m == nil {
+		return
+	}
+	if operation != "download" && operation != "archive" {
+		operation = "other"
+	}
+	m.ArtifactFailures.Add(ctx, 1, metric.WithAttributes(attribute.String("operation", operation)))
 }
 
 // Backlog contains an installation-wide snapshot of pending work.

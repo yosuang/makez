@@ -3,8 +3,12 @@ module github.com/makez-dev/makez
 go 1.27.2
 
 require (
+	github.com/casbin/casbin/v2 v2.123.0
+	github.com/coreos/go-oidc/v3 v3.14.1
+	github.com/go-jose/go-jose/v4 v4.1.4
 	github.com/jackc/pgx/v5 v5.11.0
 	github.com/labstack/echo/v5 v5.4.0
+	github.com/pressly/goose/v3 v3.26.0
 	github.com/stretchr/testify v1.12.1
 	github.com/swaggo/files/v2 v2.0.2
 	github.com/swaggo/swag v1.16.6
@@ -16,11 +20,15 @@ require (
 	go.opentelemetry.io/proto/otlp v1.11.0
 	go.temporal.io/api v1.64.0
 	go.temporal.io/sdk v1.50.0
+	golang.org/x/net v0.60.0
+	golang.org/x/oauth2 v0.36.0
 	google.golang.org/protobuf v1.36.12
 )
 
 require (
 	github.com/KyleBanks/depth v1.2.1 // indirect
+	github.com/bmatcuk/doublestar/v4 v4.6.1 // indirect
+	github.com/casbin/govaluate v1.3.0 // indirect
 	github.com/cenkalti/backoff/v5 v5.0.3 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/facebookgo/clock v0.0.0-20150410010913-600d898af40a // indirect
@@ -44,16 +52,18 @@ require (
 	github.com/jackc/pgpassfile v1.0.0 // indirect
 	github.com/jackc/pgservicefile v0.0.0-20240606120523-5a60cdf6a761 // indirect
 	github.com/jackc/puddle/v2 v2.2.2 // indirect
+	github.com/mfridman/interpolate v0.0.2 // indirect
 	github.com/nexus-rpc/nexus-proto-annotations v0.1.0 // indirect
 	github.com/nexus-rpc/sdk-go v0.7.0 // indirect
 	github.com/robfig/cron v1.2.0 // indirect
+	github.com/sethvargo/go-retry v0.3.0 // indirect
 	github.com/stretchr/objx v0.5.3 // indirect
 	go.opentelemetry.io/auto/sdk v1.2.1 // indirect
 	go.opentelemetry.io/otel/log v1.47.0 // indirect
 	go.opentelemetry.io/otel/trace v1.47.0 // indirect
+	go.uber.org/multierr v1.11.0 // indirect
 	go.yaml.in/yaml/v3 v3.0.5 // indirect
 	golang.org/x/mod v0.41.0 // indirect
-	golang.org/x/net v0.60.0 // indirect
 	golang.org/x/sync v0.23.0 // indirect
 	golang.org/x/sys v0.48.0 // indirect
 	golang.org/x/text v0.42.0 // indirect
