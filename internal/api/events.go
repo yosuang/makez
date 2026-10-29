@@ -149,7 +149,7 @@ func streamEvents(ctx context.Context, w http.ResponseWriter, after int64, timeo
 		}
 		for _, event := range events {
 			if err := deadline(); err != nil {
-				return "authorization_or_write_error", err
+				return streamWriteError(ctx, err)
 			}
 			b, err := json.Marshal(EventResponse(event))
 			if err != nil {
@@ -161,7 +161,7 @@ func streamEvents(ctx context.Context, w http.ResponseWriter, after int64, timeo
 			after = event.Seq
 		}
 		if err := deadline(); err != nil {
-			return "authorization_or_write_error", err
+			return streamWriteError(ctx, err)
 		}
 		b, err := json.Marshal(taskResponseDTO(task))
 		if err != nil {
@@ -191,6 +191,9 @@ func streamEvents(ctx context.Context, w http.ResponseWriter, after int64, timeo
 func streamWriteError(ctx context.Context, err error) (string, error) {
 	if ctx.Err() != nil {
 		return "canceled", nil
+	}
+	if errors.Is(err, store.ErrUnauthenticated) || errors.Is(err, store.ErrForbidden) {
+		return "authorization_revoked", err
 	}
 	if e, ok := errors.AsType[net.Error](err); ok && e.Timeout() {
 		return "write_timeout", err
