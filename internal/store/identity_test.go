@@ -359,3 +359,18 @@ CREATE TRIGGER outbox_failure BEFORE INSERT ON makez_outbox FOR EACH ROW EXECUTE
 		t.Fatal("task survived outbox rollback", err)
 	}
 }
+
+func TestDisabledAdminCannotSatisfyLastAdminInvariant(t *testing.T) {
+	s, _ := testStore(t)
+	active, workspace := loginUser(t, s, "active-admin")
+	disabled, _ := loginUser(t, s, "disabled-admin")
+	if err := dbgen.New(s.pool).CreateMembership(t.Context(), dbgen.CreateMembershipParams{WorkspaceID: workspace, UserID: disabled.ID, Role: "Admin"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.pool.Exec(t.Context(), `UPDATE makez_users SET status='disabled' WHERE id=$1`, disabled.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.ChangeMember(t.Context(), active, workspace, active.ID, "Viewer", false); !errors.Is(err, ErrConflict) {
+		t.Fatalf("disabled Admin counted as effective administrator: %v", err)
+	}
+}

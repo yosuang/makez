@@ -32,7 +32,8 @@ SELECT id,workspace_id,role FROM makez_machines WHERE credential_digest=$1 AND s
 -- name: ListMembers :many
 SELECT m.user_id,m.role,u.display_name FROM makez_memberships m JOIN makez_users u ON u.id=m.user_id WHERE m.workspace_id=$1 AND m.status='active' ORDER BY m.user_id;
 -- name: CountAdmins :one
-SELECT count(*) FROM makez_memberships WHERE workspace_id=$1 AND role='Admin' AND status='active';
+SELECT count(*) FROM makez_memberships m JOIN makez_users u ON u.id=m.user_id
+WHERE m.workspace_id=$1 AND m.role='Admin' AND m.status='active' AND u.status='active';
 -- name: UpdateMember :execrows
 UPDATE makez_memberships SET role=$3,status=$4,updated_at=now() WHERE workspace_id=$1 AND user_id=$2 AND status='active';
 -- name: BumpAuthorization :one

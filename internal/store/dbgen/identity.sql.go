@@ -50,7 +50,8 @@ func (q *Queries) BumpAuthorization(ctx context.Context, id string) (int64, erro
 }
 
 const countAdmins = `-- name: CountAdmins :one
-SELECT count(*) FROM makez_memberships WHERE workspace_id=$1 AND role='Admin' AND status='active'
+SELECT count(*) FROM makez_memberships m JOIN makez_users u ON u.id=m.user_id
+WHERE m.workspace_id=$1 AND m.role='Admin' AND m.status='active' AND u.status='active'
 `
 
 func (q *Queries) CountAdmins(ctx context.Context, workspaceID string) (int64, error) {
