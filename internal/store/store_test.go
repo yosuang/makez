@@ -63,14 +63,19 @@ func testStore(t *testing.T) (*Store, string) {
 	if err = s.Migrate(ctx); err != nil {
 		t.Fatal(err)
 	}
-	return s, "test-" + newID()
+	t.Log("PostgreSQL integration fixture ready")
+	workspace := "test-" + newID()
+	if err = s.RegisterMachines(ctx, map[string]string{"test-key-" + workspace: workspace}); err != nil {
+		t.Fatal(err)
+	}
+	return s, workspace
 }
 func input() SubmitInput {
 	return SubmitInput{Prompt: "test task", AgentID: "demo", AgentVersion: "1", ProfileID: "local", ProfileVersion: "1", TimeoutSeconds: 3600}
 }
 func submit(t *testing.T, s *Store, w string) Task {
 	t.Helper()
-	task, created, err := s.Submit(context.Background(), w, newID(), input())
+	task, created, err := s.Submit(testPrincipal(t.Context(), w), w, newID(), input())
 	if err != nil || !created {
 		t.Fatalf("submit created=%v err=%v", created, err)
 	}
@@ -106,7 +111,7 @@ func TestSubmitIdempotencyAndOutbox(t *testing.T) {
 	ids := make(chan string, 16)
 	for range 16 {
 		wg.Go(func() {
-			task, created, err := s.Submit(ctx, w, key, input())
+			task, created, err := s.Submit(testPrincipal(ctx, w), w, key, input())
 			if err != nil {
 				t.Error(err)
 				return
@@ -131,7 +136,7 @@ func TestSubmitIdempotencyAndOutbox(t *testing.T) {
 	}
 	changed := input()
 	changed.Prompt = "different"
-	if _, _, err := s.Submit(ctx, w, key, changed); !errors.Is(err, ErrConflict) {
+	if _, _, err := s.Submit(testPrincipal(ctx, w), w, key, changed); !errors.Is(err, ErrConflict) {
 		t.Fatalf("different request: %v", err)
 	}
 	pending, err := s.Pending(ctx, 500)
@@ -145,7 +150,7 @@ func TestSubmitIdempotencyAndOutbox(t *testing.T) {
 			if o.TaskID != id || o.Command != "START_TASK" {
 				t.Fatalf("bad outbox: %+v", o)
 			}
-			if err = s.RetryOutbox(ctx, o.ID, "temporal offline"); err != nil {
+			if err = s.RetryOutbox(ctx, o, "temporal offline"); err != nil {
 				t.Fatal(err)
 			}
 		}
@@ -159,12 +164,12 @@ func TestSubmitIdempotencyAndOutbox(t *testing.T) {
 	}
 	canonical := input()
 	canonical.Config = json.RawMessage(`{"b":2,"a":1}`)
-	task, _, err = s.Submit(ctx, w, "canonical", canonical)
+	task, _, err = s.Submit(testPrincipal(ctx, w), w, "canonical", canonical)
 	if err != nil {
 		t.Fatal(err)
 	}
 	canonical.Config = json.RawMessage(`{ "a":1, "b":2 }`)
-	retried, created, err := s.Submit(ctx, w, "canonical", canonical)
+	retried, created, err := s.Submit(testPrincipal(ctx, w), w, "canonical", canonical)
 	if err != nil || created || task.ID != retried.ID || !task.Deadline.Equal(retried.Deadline) {
 		t.Fatalf("canonical retry: %+v %v", retried, err)
 	}
@@ -177,7 +182,7 @@ func TestCancellationAndWorkspaceIsolation(t *testing.T) {
 	if _, err := s.Get(ctx, "another-workspace", task.ID); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("foreign task leaked: %v", err)
 	}
-	if _, err := s.Cancel(ctx, "another-workspace", task.ID); !errors.Is(err, ErrNotFound) {
+	if _, err := s.Cancel(testPrincipal(ctx, w), "another-workspace", task.ID); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("foreign cancel: %v", err)
 	}
 	if _, err := s.Events(ctx, "another-workspace", task.ID, 0); !errors.Is(err, ErrNotFound) {
@@ -186,7 +191,7 @@ func TestCancellationAndWorkspaceIsolation(t *testing.T) {
 	if _, err := s.Artifacts(ctx, "another-workspace", task.ID); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("foreign artifacts: %v", err)
 	}
-	if _, err := s.Cancel(ctx, w, task.ID); err != nil {
+	if _, err := s.Cancel(testPrincipal(ctx, w), w, task.ID); err != nil {
 		t.Fatal(err)
 	}
 	task, err := s.InitializeRun(ctx, w, task.ID, "test-backend")
@@ -197,7 +202,7 @@ func TestCancellationAndWorkspaceIsolation(t *testing.T) {
 		task = prepareRun(t, s, w)
 		finalizing(t, s, task.Run.ID)
 		if cancelFirst {
-			if _, err = s.Cancel(ctx, w, task.ID); err != nil {
+			if _, err = s.Cancel(testPrincipal(ctx, w), w, task.ID); err != nil {
 				t.Fatal(err)
 			}
 		}
@@ -205,7 +210,7 @@ func TestCancellationAndWorkspaceIsolation(t *testing.T) {
 			t.Fatal(err)
 		}
 		if !cancelFirst {
-			if _, err = s.Cancel(ctx, w, task.ID); err != nil {
+			if _, err = s.Cancel(testPrincipal(ctx, w), w, task.ID); err != nil {
 				t.Fatal(err)
 			}
 		}
@@ -239,7 +244,7 @@ func TestCancelPublishRace(t *testing.T) {
 		wg.Go(func() {
 			<-start
 			var err error
-			canceled, err = s.Cancel(ctx, w, task.ID)
+			canceled, err = s.Cancel(testPrincipal(ctx, w), w, task.ID)
 			if err != nil {
 				t.Error(err)
 			}
@@ -361,7 +366,7 @@ func TestDeadlineAndUnconfirmedStop(t *testing.T) {
 	in := input()
 	in.TimeoutSeconds = 0
 	in.Deadline = time.Now().Add(time.Minute)
-	task, _, err := s.Submit(ctx, w, newID(), in)
+	task, _, err := s.Submit(testPrincipal(ctx, w), w, newID(), in)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -374,7 +379,7 @@ func TestDeadlineAndUnconfirmedStop(t *testing.T) {
 	}
 	task = prepareRun(t, s, w)
 	finalizing(t, s, task.Run.ID)
-	if _, err = s.Cancel(ctx, w, task.ID); err != nil {
+	if _, err = s.Cancel(testPrincipal(ctx, w), w, task.ID); err != nil {
 		t.Fatal(err)
 	}
 	if err = s.Publish(ctx, w, task.ID, core.TaskCanceled, "", false, core.CleanupPending, nil); err != nil {
@@ -413,7 +418,7 @@ func TestExpiredExplicitDeadlineRetry(t *testing.T) {
 	in := input()
 	in.TimeoutSeconds = 0
 	in.Deadline = time.Now().Add(time.Minute)
-	task, _, err := s.Submit(ctx, w, "deadline-retry", in)
+	task, _, err := s.Submit(testPrincipal(ctx, w), w, "deadline-retry", in)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -427,43 +432,12 @@ func TestExpiredExplicitDeadlineRetry(t *testing.T) {
 	if _, err = s.pool.Exec(ctx, "UPDATE makez_tasks SET request_hash=$2,deadline=$3 WHERE id=$1", task.ID, hex.EncodeToString(digest[:]), expired.Deadline); err != nil {
 		t.Fatal(err)
 	}
-	retried, created, err := s.Submit(ctx, w, "deadline-retry", expired)
+	retried, created, err := s.Submit(testPrincipal(ctx, w), w, "deadline-retry", expired)
 	if err != nil || created || retried.ID != task.ID {
 		t.Fatalf("expired duplicate rejected: %+v %v", retried, err)
 	}
-	if _, _, err = s.Submit(ctx, w, "new-expired", expired); !errors.Is(err, ErrInvalidInput) {
+	if _, _, err = s.Submit(testPrincipal(ctx, w), w, "new-expired", expired); !errors.Is(err, ErrInvalidInput) {
 		t.Fatalf("new expired task accepted: %v", err)
-	}
-}
-
-func TestMigrationVersionTwoPreservesVersionOneData(t *testing.T) {
-	s, workspace := testStore(t)
-	task := prepareRun(t, s, workspace)
-	// Only this test's private schema is rolled back to the previous shape.
-	if _, err := s.pool.Exec(t.Context(), `ALTER TABLE makez_runs DROP COLUMN agent_plan; DELETE FROM makez_schema_migrations WHERE version=2`); err != nil {
-		t.Fatal(err)
-	}
-	if err := s.Migrate(t.Context()); err != nil {
-		t.Fatal(err)
-	}
-	recovered, err := s.Get(t.Context(), workspace, task.ID)
-	if err != nil || recovered.Run == nil || recovered.Run.ID != task.Run.ID || recovered.Run.Plan != nil {
-		t.Fatalf("version-one data not preserved: %v", err)
-	}
-	plan := core.AgentPlan{Command: core.CommandSpec{Argv: []string{"/original-agent"}}, SecretRefs: map[string]string{"API_TOKEN": "auth@1"}}
-	if _, err = s.FreezePlan(t.Context(), task.Run.ID, plan); err != nil {
-		t.Fatal(err)
-	}
-	if err = s.Migrate(t.Context()); err != nil {
-		t.Fatal(err)
-	}
-	recovered, err = s.Get(t.Context(), workspace, task.ID)
-	if err != nil || recovered.Run.Plan == nil || recovered.Run.Plan.SecretRefs["API_TOKEN"] != "auth@1" {
-		t.Fatalf("repeated migration changed frozen plan: %v", err)
-	}
-	var versions int
-	if err = s.pool.QueryRow(t.Context(), `SELECT count(*) FROM makez_schema_migrations WHERE version IN (1,2)`).Scan(&versions); err != nil || versions != 2 {
-		t.Fatalf("migration ledger versions=%d err=%v", versions, err)
 	}
 }
 
@@ -510,4 +484,8 @@ func TestFreezePlanChoosesOneImmutablePlanAndHidesItFromTaskJSON(t *testing.T) {
 	if _, err := s.FreezePlan(t.Context(), task.Run.ID, core.AgentPlan{Command: core.CommandSpec{Argv: []string{"/agent"}, Env: map[string]string{"API_TOKEN": "must-not-be-persisted"}}, SecretRefs: map[string]string{"API_TOKEN": "auth@1"}}); !errors.Is(err, ErrInvalidInput) {
 		t.Fatalf("accepted colliding plain environment and secret binding: %v", err)
 	}
+}
+
+func testPrincipal(ctx context.Context, workspace string) context.Context {
+	return WithPrincipal(ctx, Principal{Kind: "machine", ID: "machine-" + hex.EncodeToString(tokenDigest("test-key-"+workspace))})
 }

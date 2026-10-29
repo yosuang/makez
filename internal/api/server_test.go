@@ -24,11 +24,12 @@ import (
 )
 
 type apiFixture struct {
-	db        *store.Store
-	files     *artifact.Store
-	handler   http.Handler
-	workspace string
-	token     string
+	databaseURL string
+	db          *store.Store
+	files       *artifact.Store
+	handler     http.Handler
+	workspace   string
+	token       string
 }
 
 func TestAPIHasNoEmbeddedWebConsole(t *testing.T) {
@@ -92,6 +93,7 @@ func apiTestServer(t *testing.T) *apiFixture {
 	if err = db.Migrate(ctx); err != nil {
 		t.Fatal(err)
 	}
+	t.Log("PostgreSQL integration fixture ready")
 	files, err := artifact.New(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -102,8 +104,11 @@ func apiTestServer(t *testing.T) *apiFixture {
 		}
 	})
 	workspace := "api-test-" + hex.EncodeToString(nonce[:])
-	s := &Server{DB: db, Artifacts: files, Keys: map[string]string{"token-a": workspace, "token-b": workspace + "-other"}, Agents: map[string]core.AgentAdapter{"demo@1": agent.NewDemo()}}
-	return &apiFixture{db: db, files: files, handler: s.Handler(), workspace: workspace, token: "token-a"}
+	s := &Server{DB: db, Artifacts: files, Keys: map[string]string{"test-machine-token-a": workspace, "test-machine-token-b": workspace + "-other"}, Agents: map[string]core.AgentAdapter{"demo@1": agent.NewDemo()}}
+	if err = db.RegisterMachines(ctx, s.Keys); err != nil {
+		t.Fatal(err)
+	}
+	return &apiFixture{databaseURL: u.String(), db: db, files: files, handler: s.Handler(), workspace: workspace, token: "test-machine-token-a"}
 }
 func (f *apiFixture) request(t *testing.T, method, route, body, key, token string) *httptest.ResponseRecorder {
 	t.Helper()
@@ -175,14 +180,14 @@ func TestAPIAuthIsolationAndQueuedCancel(t *testing.T) {
 		t.Fatalf("Bearer prefix required, got %d", response.Code)
 	}
 	for _, route := range []string{"/v1/tasks/" + task.ID, "/v1/tasks/" + task.ID + "/artifacts", "/v1/tasks/" + task.ID + "/events"} {
-		if got := f.request(t, "GET", route, "", "", "token-b"); got.Code != 404 {
+		if got := f.request(t, "GET", route, "", "", "test-machine-token-b"); got.Code != 404 {
 			t.Fatalf("foreign route %s status=%d", route, got.Code)
 		}
 	}
-	if got := f.request(t, "POST", "/v1/tasks/"+task.ID+"/cancel", "", "", "token-b"); got.Code != 404 {
+	if got := f.request(t, "POST", "/v1/tasks/"+task.ID+"/cancel", "", "", "test-machine-token-b"); got.Code != 404 {
 		t.Fatalf("foreign cancel status=%d", got.Code)
 	}
-	if got := f.request(t, "GET", "/v1/tasks", "", "", "token-b"); got.Code != 200 || strings.TrimSpace(got.Body.String()) != "[]" {
+	if got := f.request(t, "GET", "/v1/tasks", "", "", "test-machine-token-b"); got.Code != 200 || strings.TrimSpace(got.Body.String()) != "[]" {
 		t.Fatalf("foreign list: %d %s", got.Code, got.Body.String())
 	}
 	canceled := taskResponse(t, f.request(t, "POST", "/v1/tasks/"+task.ID+"/cancel", "", "", f.token), 200)
@@ -277,7 +282,7 @@ func TestAPIArtifactAndEventReplay(t *testing.T) {
 	if download.Code != 200 || download.Body.String() != "result content" || !strings.HasPrefix(download.Header().Get("Content-Disposition"), "attachment;") {
 		t.Fatalf("download: %d %s", download.Code, download.Body.String())
 	}
-	if got := f.request(t, "GET", route, "", "", "token-b"); got.Code != 404 {
+	if got := f.request(t, "GET", route, "", "", "test-machine-token-b"); got.Code != 404 {
 		t.Fatalf("foreign download=%d", got.Code)
 	}
 	events := f.request(t, "GET", "/v1/tasks/"+task.ID+"/events", "", "", f.token)

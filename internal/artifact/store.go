@@ -53,6 +53,23 @@ func New(directory string) (*Store, error) {
 // Close releases the storage root descriptor.
 func (s *Store) Close() error { return s.root.Close() }
 
+// WalkPublished visits final object names only. Active temporary files are never
+// treated as garbage and this method performs no deletion or repair.
+func (s *Store) WalkPublished(ctx context.Context, visit func(string) error) error {
+	return fs.WalkDir(s.root.FS(), ".", func(name string, entry fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if err = ctx.Err(); err != nil {
+			return err
+		}
+		if entry.IsDir() || strings.HasPrefix(entry.Name(), ".tmp-") {
+			return nil
+		}
+		return visit(name)
+	})
+}
+
 // ValidatePath accepts relative result paths or explicit /workspace paths.
 // Remote readers must additionally reject symlink escapes within the sandbox.
 func ValidatePath(value string) (string, error) {
@@ -103,6 +120,37 @@ func (s *Store) Open(key string) (io.ReadCloser, error) {
 			return nil, err
 		}
 		return nil, fmt.Errorf("invalid stored artifact")
+	}
+	hash := sha256.New()
+	if _, err = io.Copy(hash, f); err != nil {
+		_ = f.Close()
+		return nil, err
+	}
+	if hex.EncodeToString(hash.Sum(nil)) != parts[1] {
+		_ = f.Close()
+		return nil, errors.New("stored artifact digest mismatch")
+	}
+	if _, err = f.Seek(0, io.SeekStart); err != nil {
+		_ = f.Close()
+		return nil, err
+	}
+	return f, nil
+}
+
+// OpenVerified checks database metadata against the immutable object before any
+// download headers are sent. Corruption remains visible for manual investigation.
+func (s *Store) OpenVerified(key, digest string, size int64) (io.ReadCloser, error) {
+	if path.Base(key) != digest {
+		return nil, errors.New("artifact metadata digest mismatch")
+	}
+	f, err := s.Open(key)
+	if err != nil {
+		return nil, err
+	}
+	info, err := f.(*os.File).Stat()
+	if err != nil || info.Size() != size {
+		_ = f.Close()
+		return nil, errors.New("artifact metadata size mismatch")
 	}
 	return f, nil
 }
@@ -190,8 +238,18 @@ func (s *Store) archiveOne(ctx context.Context, runID, logicalPath string, input
 	}
 	digest := hex.EncodeToString(hash.Sum(nil))
 	key := path.Join(runID, digest)
-	if err := s.root.Rename(temp, key); err != nil {
-		return Record{}, err
+	// Link publishes atomically without replacing an existing immutable object.
+	if err := s.root.Link(temp, key); err != nil {
+		if !errors.Is(err, fs.ErrExist) {
+			return Record{}, err
+		}
+		existing, verifyErr := s.Open(key)
+		if verifyErr != nil {
+			return Record{}, verifyErr
+		}
+		if err = existing.Close(); err != nil {
+			return Record{}, err
+		}
 	}
 	directory, err := s.root.Open(runID)
 	if err != nil {

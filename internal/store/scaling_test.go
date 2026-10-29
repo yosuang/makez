@@ -89,7 +89,7 @@ func TestOutboxAgeSurvivesRetryAndPoolIsBounded(t *testing.T) {
 	if err != nil || len(pending) != 1 {
 		t.Fatalf("pending=%d err=%v", len(pending), err)
 	}
-	if err := s.RetryOutbox(t.Context(), pending[0].ID, "test"); err != nil {
+	if err := s.RetryOutbox(t.Context(), pending[0], "test"); err != nil {
 		t.Fatal(err)
 	}
 	metrics := collectStoreMetrics(t, reader)
@@ -114,33 +114,6 @@ func TestPoolBudgetValidation(t *testing.T) {
 				t.Fatal("invalid pool budget accepted")
 			}
 		})
-	}
-}
-
-func TestMigrationThreePreservesExistingRuns(t *testing.T) {
-	s, workspace := testStore(t)
-	task := prepareRun(t, s, workspace)
-	// Roll back only this test's private schema to the previous shape.
-	_, err := s.pool.Exec(t.Context(), `ALTER TABLE makez_runs DROP COLUMN started_at;
- ALTER TABLE makez_outbox DROP COLUMN created_at;
- DROP INDEX makez_tasks_recovery_cursor;
- DROP INDEX makez_runs_cleanup_needed;
- DELETE FROM makez_schema_migrations WHERE version=3`)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for range 2 {
-		if err := s.Migrate(t.Context()); err != nil {
-			t.Fatal(err)
-		}
-	}
-	got, err := s.Get(t.Context(), workspace, task.ID)
-	if err != nil || got.Run == nil || got.Run.ID != task.Run.ID || got.Run.StartedAt != nil {
-		t.Fatalf("migration must preserve old runs without inventing a start time: %v", err)
-	}
-	pending, err := s.Pending(t.Context(), 10)
-	if err != nil || len(pending) != 1 {
-		t.Fatalf("migration lost outbox: %v", err)
 	}
 }
 

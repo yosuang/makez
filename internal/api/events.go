@@ -62,6 +62,13 @@ func (s *Server) events(c *echo.Context) error {
 	if timeout <= 0 {
 		timeout = 10 * time.Second
 	}
+	check := func(ctx context.Context) error {
+		p, _, authErr := s.authenticate(r.WithContext(ctx))
+		if authErr != nil {
+			return authErr
+		}
+		return s.DB.Authorize(ctx, p, workspace(r), "read")
+	}
 	reason, err := streamEvents(ctx, w, after, timeout, func(ctx context.Context, after int64) (store.Task, []store.Event, error) {
 		// Fetch status first. A terminal snapshot cannot precede its final committed events.
 		task, err := s.DB.Get(ctx, workspace(r), c.Param("id"))
@@ -70,7 +77,7 @@ func (s *Server) events(c *echo.Context) error {
 		}
 		events, err := s.DB.Events(ctx, workspace(r), c.Param("id"), after)
 		return task, events, err
-	}, s)
+	}, s, check)
 	if s.Shutdown != nil && s.Shutdown.Err() != nil {
 		reason = "shutdown"
 	}
@@ -83,7 +90,7 @@ func (s *Server) events(c *echo.Context) error {
 
 // streamEvents owns only the stream lifetime; the fetch closure keeps SQL and
 // authorization in the caller and lets transport tests use a real TCP connection.
-func streamEvents(ctx context.Context, w http.ResponseWriter, after int64, timeout time.Duration, fetch func(context.Context, int64) (store.Task, []store.Event, error), s *Server) (string, error) {
+func streamEvents(ctx context.Context, w http.ResponseWriter, after int64, timeout time.Duration, fetch func(context.Context, int64) (store.Task, []store.Event, error), s *Server, check func(context.Context) error) (string, error) {
 	if s.Metrics != nil {
 		s.Metrics.Streams.Add(ctx, 1)
 		defer s.Metrics.Streams.Add(ctx, -1)
@@ -101,6 +108,11 @@ func streamEvents(ctx context.Context, w http.ResponseWriter, after int64, timeo
 	deadline := func() error {
 		if ctx.Err() != nil {
 			return ctx.Err()
+		}
+		if check != nil {
+			if err := check(ctx); err != nil {
+				return err
+			}
 		}
 		err := controller.SetWriteDeadline(time.Now().Add(timeout))
 		if ctx.Err() != nil {
@@ -136,6 +148,9 @@ func streamEvents(ctx context.Context, w http.ResponseWriter, after int64, timeo
 			return streamWriteError(ctx, err)
 		}
 		for _, event := range events {
+			if err := deadline(); err != nil {
+				return "authorization_or_write_error", err
+			}
 			b, err := json.Marshal(EventResponse(event))
 			if err != nil {
 				return "encode_error", err
@@ -144,6 +159,9 @@ func streamEvents(ctx context.Context, w http.ResponseWriter, after int64, timeo
 				return streamWriteError(ctx, err)
 			}
 			after = event.Seq
+		}
+		if err := deadline(); err != nil {
+			return "authorization_or_write_error", err
 		}
 		b, err := json.Marshal(taskResponseDTO(task))
 		if err != nil {

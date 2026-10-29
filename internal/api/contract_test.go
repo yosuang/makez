@@ -25,24 +25,26 @@ import (
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 )
 
-func TestRoutesAndStrictInputWithoutDatabase(t *testing.T) {
-	handler := (&Server{Keys: map[string]string{"test-token": "workspace"}, Agents: map[string]core.AgentAdapter{"demo@1": agent.NewDemo()}}).Handler()
+func TestRoutesAndStrictInput(t *testing.T) {
+	f := apiTestServer(t)
+	handler := (&Server{DB: f.db, Keys: map[string]string{f.token: f.workspace}, AllowedOrigins: []string{"https://console.example"}, Agents: map[string]core.AgentAdapter{"demo@1": agent.NewDemo()}}).Handler()
 	for _, tc := range []struct {
 		method, path, body, token string
 		status                    int
 	}{
-		{"GET", "/missing", "", "", 404}, {"GET", "/v1/missing", "", "", 401}, {"GET", "/v1/missing", "", "test-token", 404},
-		{"PUT", "/v1/tasks", "", "test-token", 405}, {"OPTIONS", "/v1/agents", "", "", 204},
-		{"GET", "/v1/agents/", "", "test-token", 404}, {"HEAD", "/v1/agents", "", "test-token", 200},
-		{"POST", "/v1/tasks", `{"prompt":"x","unknown":1}`, "test-token", 400},
-		{"POST", "/v1/tasks", `{"prompt":"x"} {}`, "test-token", 400},
-		{"POST", "/v1/tasks", `{"prompt":"` + strings.Repeat("x", 128<<10) + `"}`, "test-token", 400},
+		{"GET", "/missing", "", "", 404}, {"GET", "/v1/missing", "", "", 401}, {"GET", "/v1/missing", "", "test-machine-token-a", 404},
+		{"PUT", "/v1/tasks", "", "test-machine-token-a", 405}, {"OPTIONS", "/v1/agents", "", "", 204},
+		{"GET", "/v1/agents/", "", "test-machine-token-a", 404}, {"HEAD", "/v1/agents", "", "test-machine-token-a", 200},
+		{"POST", "/v1/tasks", `{"prompt":"x","unknown":1}`, "test-machine-token-a", 400},
+		{"POST", "/v1/tasks", `{"prompt":"x"} {}`, "test-machine-token-a", 400},
+		{"POST", "/v1/tasks", `{"prompt":"` + strings.Repeat("x", 128<<10) + `"}`, "test-machine-token-a", 400},
 	} {
 		t.Run(tc.method+tc.path+tc.body[:min(20, len(tc.body))], func(t *testing.T) {
 			req := httptest.NewRequest(tc.method, tc.path, strings.NewReader(tc.body))
 			req.Header.Set("Authorization", "Bearer "+tc.token)
 			req.Header.Set("Idempotency-Key", "test")
 			req.Header.Set("X-Request-ID", "contract-123")
+			req.Header.Set("Origin", "https://console.example")
 			rec := httptest.NewRecorder()
 			handler.ServeHTTP(rec, req)
 			if rec.Code != tc.status {
@@ -54,7 +56,7 @@ func TestRoutesAndStrictInputWithoutDatabase(t *testing.T) {
 			if rec.Header().Get("X-Request-ID") != "contract-123" || rec.Header().Get("X-Content-Type-Options") != "nosniff" {
 				t.Fatal("missing shared headers")
 			}
-			if rec.Header().Get("Access-Control-Allow-Origin") != "*" {
+			if rec.Header().Get("Access-Control-Allow-Origin") != "https://console.example" {
 				t.Fatal("missing browser CORS origin")
 			}
 			if tc.method == http.MethodOptions {
@@ -125,10 +127,10 @@ func TestSwaggerMatchesWireNamesAndRoutes(t *testing.T) {
 	if err := json.Unmarshal([]byte(docs.SwaggerInfo.ReadDoc()), &spec); err != nil {
 		t.Fatal(err)
 	}
-	if spec.Swagger != "2.0" || len(spec.Paths) != 7 {
+	if spec.Swagger != "2.0" || len(spec.Paths) != 16 {
 		t.Fatalf("unexpected spec version/paths: %s %d", spec.Swagger, len(spec.Paths))
 	}
-	for _, route := range []struct{ path, method string }{{"/agents", "get"}, {"/tasks", "get"}, {"/tasks", "post"}, {"/tasks/{id}", "get"}, {"/tasks/{id}/cancel", "post"}, {"/tasks/{id}/events", "get"}, {"/tasks/{id}/artifacts", "get"}, {"/artifacts/{id}/content", "get"}} {
+	for _, route := range []struct{ path, method string }{{"/agents", "get"}, {"/tasks", "get"}, {"/tasks", "post"}, {"/tasks/{id}", "get"}, {"/tasks/{id}/cancel", "post"}, {"/tasks/{id}/events", "get"}, {"/tasks/{id}/artifacts", "get"}, {"/artifacts/{id}/content", "get"}, {"/auth/google/start", "get"}, {"/auth/google/callback", "get"}, {"/auth/refresh", "post"}, {"/auth/logout", "post"}, {"/auth/logout-all", "post"}, {"/me", "get"}, {"/workspaces", "get"}, {"/workspaces/{workspaceID}/members", "get"}, {"/workspaces/{workspaceID}/members/{userID}", "patch"}, {"/workspaces/{workspaceID}/members/{userID}", "delete"}} {
 		if spec.Paths[route.path][route.method] == nil {
 			t.Fatalf("missing %s %s", route.method, route.path)
 		}

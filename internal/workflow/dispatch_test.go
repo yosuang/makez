@@ -22,7 +22,7 @@ func TestSlowRecoveryDoesNotBlockOutboxDelivery(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, row := range pending {
-		if err := db.Delivered(t.Context(), row.ID); err != nil {
+		if err := db.Delivered(t.Context(), row); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -47,7 +47,7 @@ func TestSlowRecoveryDoesNotBlockOutboxDelivery(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("recovery did not start")
 	}
-	_, _, err = db.Submit(t.Context(), "activity-test", "fresh", store.SubmitInput{Prompt: "new", AgentID: "demo", AgentVersion: "1", ProfileID: "local", ProfileVersion: "1", TimeoutSeconds: 3600})
+	_, _, err = db.Submit(activityPrincipal(t, db), "activity-test", "fresh", store.SubmitInput{Prompt: "new", AgentID: "demo", AgentVersion: "1", ProfileID: "local", ProfileVersion: "1", TimeoutSeconds: 3600})
 	if err != nil {
 		t.Fatal(err)
 	}

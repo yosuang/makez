@@ -73,12 +73,16 @@ func activityStore(t *testing.T) *store.Store {
 	if err = db.Migrate(ctx); err != nil {
 		t.Fatal(err)
 	}
+	t.Log("PostgreSQL integration fixture ready")
+	if err = db.RegisterMachines(ctx, map[string]string{"activity-test-machine-key": "activity-test"}); err != nil {
+		t.Fatal(err)
+	}
 	return db
 }
 
 func activityTask(t *testing.T, db *store.Store, initialize bool) store.Task {
 	t.Helper()
-	task, _, err := db.Submit(context.Background(), "activity-test", "task", store.SubmitInput{Prompt: "test", AgentID: "demo", AgentVersion: "1", ProfileID: "local", ProfileVersion: "1", TimeoutSeconds: 3600})
+	task, _, err := db.Submit(activityPrincipal(t, db), "activity-test", "task", store.SubmitInput{Prompt: "test", AgentID: "demo", AgentVersion: "1", ProfileID: "local", ProfileVersion: "1", TimeoutSeconds: 3600})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -154,7 +158,7 @@ func TestFinalizePublishesStagedResultAfterSandboxDeletion(t *testing.T) {
 			}
 			provider := &finalizerProvider{}
 			if scenario == "late cancellation" {
-				if _, err = db.Cancel(context.Background(), task.WorkspaceID, task.ID); err != nil {
+				if _, err = db.Cancel(activityPrincipal(t, db), task.WorkspaceID, task.ID); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -316,7 +320,7 @@ func TestReconcileResubmitsCleanupForTerminalPendingTask(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, row := range rows {
-		if err = db.Delivered(context.Background(), row.ID); err != nil {
+		if err = db.Delivered(context.Background(), row); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -326,4 +330,13 @@ func TestReconcileResubmitsCleanupForTerminalPendingTask(t *testing.T) {
 	}), mock.Anything, Input{task.WorkspaceID, task.ID}).Return(nil, nil).Once()
 	reconcile(context.Background(), db, remote, store.RecoveryCursor{})
 	remote.AssertExpectations(t)
+}
+
+func activityPrincipal(t *testing.T, db *store.Store) context.Context {
+	t.Helper()
+	p, _, err := db.AuthenticateMachine(t.Context(), "activity-test-machine-key")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return store.WithPrincipal(t.Context(), p)
 }

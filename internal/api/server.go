@@ -23,9 +23,12 @@ import (
 // @securityDefinitions.apikey BearerAuth
 // @in header
 // @name Authorization
-// @description Enter Bearer followed by the workspace API key.
+// @description Enter Bearer followed by a Makez access token or configured machine key. Human business requests also require X-Makez-Workspace-ID.
 type Server struct {
 	DB             *store.Store
+	Google         *GoogleAuth
+	AllowedOrigins []string
+	SessionPolicy  store.SessionPolicy
 	Artifacts      *artifact.Store
 	Keys           map[string]string
 	Agents         map[string]core.AgentAdapter
@@ -44,11 +47,21 @@ type workspaceKey struct{}
 func (s *Server) Handler() http.Handler {
 	e := echo.NewWithConfig(echo.Config{Logger: slog.Default(), Router: echo.NewRouter(echo.RouterConfig{AutoHandleHEAD: true, OptionsMethodHandler: func(_ *echo.Context) error { return echo.ErrMethodNotAllowed }, UseEscapedPathForMatching: true, UnescapePathParamValues: true})})
 	e.HTTPErrorHandler = s.handleError
-	e.Use(s.observe, allowBrowser, s.authorize)
+	e.Use(s.observe, s.allowBrowser, s.authorize)
 	e.GET("/healthz", func(c *echo.Context) error { return c.String(200, "ok") })
 	e.GET("/readyz", s.ready)
 	s.registerDocs(e)
 	if !s.OperationsOnly {
+		e.GET("/v1/auth/google/start", s.googleStart)
+		e.GET("/v1/auth/google/callback", s.googleCallback)
+		e.POST("/v1/auth/refresh", s.refresh)
+		e.POST("/v1/auth/logout", s.logout)
+		e.POST("/v1/auth/logout-all", s.logoutAll)
+		e.GET("/v1/me", s.me)
+		e.GET("/v1/workspaces", s.workspaces)
+		e.GET("/v1/workspaces/:workspaceID/members", s.listMembers)
+		e.PATCH("/v1/workspaces/:workspaceID/members/:userID", s.updateMember)
+		e.DELETE("/v1/workspaces/:workspaceID/members/:userID", s.removeMember)
 		e.GET("/v1/agents", s.agents)
 		e.POST("/v1/tasks", s.submit)
 		e.GET("/v1/tasks", s.list)

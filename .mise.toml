@@ -4,6 +4,7 @@
 [tools]
 go = "1.27.2"
 "golangci-lint" = "2.15.0"
+"aqua:sqlc-dev/sqlc" = "1.29.0"
 
 [tasks.dev]
 description = "Start the local API, web app, and infrastructure"
@@ -59,4 +60,29 @@ tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 go run github.com/swaggo/swag/cmd/swag@v1.16.6 init -g internal/api/server.go --parseInternal --packageName docs --propertyStrategy pascalcase --output "$tmp" --outputTypes go,json,yaml
 diff -ru internal/api/docs "$tmp"
+'''
+
+[tasks.sqlc]
+description = "Generate typed PostgreSQL queries"
+run = "sqlc generate"
+
+[tasks.sqlc-check]
+description = "Fail when typed query generation drifts"
+run = '''
+#!/usr/bin/env bash
+set -euo pipefail
+tmp=$(mktemp -d)
+trap 'rm -rf "$tmp"' EXIT
+cp -R internal/store/dbgen "$tmp/dbgen"
+sqlc generate
+diff -ru "$tmp/dbgen" internal/store/dbgen
+'''
+
+[tasks.test-pg]
+description = "Require real PostgreSQL for all integration tests"
+run = '''
+#!/usr/bin/env bash
+set -euo pipefail
+: "${MAKEZ_TEST_DATABASE_URL:?Set an isolated PostgreSQL test database URL}"
+go test ./...
 '''

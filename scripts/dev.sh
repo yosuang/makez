@@ -30,6 +30,8 @@ source .local/env
 
 # Enable development features unless the shell or .local/env explicitly sets a mode.
 export MAKEZ_ENV="${MAKEZ_ENV-development}"
+export MAKEZ_DATABASE_URL="${MAKEZ_DATABASE_URL:-postgres://makez:makez-local@127.0.0.1:55432/makez?sslmode=disable}"
+export MAKEZ_WEB_ORIGINS="${MAKEZ_WEB_ORIGINS:-http://127.0.0.1:3000}"
 
 if [[ -n "${MAKEZ_CODEX_AGENT:-}" ]]; then
   export MAKEZ_RUNTIME_IMAGE="${MAKEZ_RUNTIME_IMAGE:-makez-runtime-codex:0.1}"
@@ -45,8 +47,10 @@ if [[ "$MAKEZ_RUNTIME_IMAGE" == makez-runtime-codex:0.1 ]]; then
 fi
 docker image inspect "$MAKEZ_RUNTIME_IMAGE" >/dev/null
 go run ./build bin/makez
+# Migration is a separate operation; legacy adoption requires explicit operator review.
+bin/makez migrate
 
-printf '\nGo API: http://%s\nAPI Key: %s\n' "${MAKEZ_LISTEN:-127.0.0.1:8088}" "$(jq -er 'keys[0]' <<< "$MAKEZ_API_KEYS")"
+printf '\nGo API: http://%s\n' "${MAKEZ_LISTEN:-127.0.0.1:8088}"
 printf 'Web: http://127.0.0.1:3000\n'
 printf 'Temporal: http://127.0.0.1:18233\nCtrl+C stops makez and Web. Infrastructure stays running; use docker compose -f deploy/docker-compose.infra.yaml down to stop it (source .local/env first).\n\n'
 

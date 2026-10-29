@@ -14,6 +14,7 @@ import (
 	enums "go.temporal.io/api/enums/v1"
 	"go.temporal.io/api/serviceerror"
 	"go.temporal.io/sdk/client"
+	"go.temporal.io/sdk/converter"
 	"go.temporal.io/sdk/temporal"
 	tw "go.temporal.io/sdk/workflow"
 )
@@ -28,8 +29,29 @@ func start(ctx context.Context, c client.Client, id string, wf any, in Input) er
 	if strings.HasPrefix(id, "makez/recover/") || strings.HasPrefix(id, "makez/cleanup/") {
 		policy = enums.WORKFLOW_ID_REUSE_POLICY_ALLOW_DUPLICATE_FAILED_ONLY
 	}
-	_, err := c.ExecuteWorkflow(ctx, client.StartWorkflowOptions{ID: id, TaskQueue: Queue, WorkflowIDReusePolicy: policy, WorkflowExecutionErrorWhenAlreadyStarted: true}, wf, in)
-	if _, ok := errors.AsType[*serviceerror.WorkflowExecutionAlreadyStarted](err); ok {
+	_, err := c.ExecuteWorkflow(ctx, client.StartWorkflowOptions{ID: id, TaskQueue: Queue, WorkflowIDReusePolicy: policy, WorkflowIDConflictPolicy: enums.WORKFLOW_ID_CONFLICT_POLICY_FAIL, WorkflowExecutionErrorWhenAlreadyStarted: true}, wf, in)
+	if existing, ok := errors.AsType[*serviceerror.WorkflowExecutionAlreadyStarted](err); ok {
+		// A matching ID alone is insufficient: verify the original durable input.
+		// Missing/expired history stays blocked for operator investigation.
+		history := c.GetWorkflowHistory(ctx, id, existing.RunId, false, enums.HISTORY_EVENT_FILTER_TYPE_ALL_EVENT)
+		if !history.HasNext() {
+			return errors.New("existing workflow history is unavailable")
+		}
+		event, readErr := history.Next()
+		if readErr != nil {
+			return readErr
+		}
+		started := event.GetWorkflowExecutionStartedEventAttributes()
+		if started == nil {
+			return errors.New("existing workflow start is unavailable")
+		}
+		var original Input
+		if readErr = converter.GetDefaultDataConverter().FromPayloads(started.Input, &original); readErr != nil {
+			return readErr
+		}
+		if original != in {
+			return errors.New("workflow identity does not match task")
+		}
 		return nil
 	}
 	return err
@@ -41,6 +63,23 @@ func Dispatch(ctx context.Context, db *store.Store, c client.Client) {
 	wg.Go(func() {
 		cursor := store.RecoveryCursor{}
 		repeat(ctx, 15*time.Second, func() { cursor = reconcile(ctx, db, c, cursor) })
+	})
+	wg.Go(func() {
+		repeat(ctx, time.Second, func() {
+			changes, err := db.ClaimAuthorization(ctx)
+			if err != nil {
+				slog.Error("authorization outbox read failed")
+				return
+			}
+			for _, change := range changes {
+				// Every API and worker decision already uses current database facts.
+				// This notification is for observation, not an authorization cache.
+				slog.Info("workspace authorization changed", "workspace_id", change.WorkspaceID, "version", change.Version)
+				if err = db.FinishAuthorization(ctx, change, true); err != nil {
+					slog.Warn("authorization notification acknowledgment failed")
+				}
+			}
+		})
 	})
 	defer wg.Wait()
 	repeat(ctx, time.Second, func() { dispatchOnce(ctx, db, c) })
@@ -59,7 +98,7 @@ func repeat(ctx context.Context, interval time.Duration, fn func()) {
 	}
 }
 func dispatchOnce(ctx context.Context, db *store.Store, c client.Client) {
-	rows, err := db.Pending(ctx, 50)
+	rows, err := db.Pending(ctx, 5)
 	if err != nil {
 		slog.Error("outbox read failed", "error_type", fmt.Sprintf("%T", err))
 		return
@@ -77,6 +116,10 @@ func dispatchOnce(ctx context.Context, db *store.Store, c client.Client) {
 				err = e
 			} else if store.IsTerminal(t.State) {
 				err = nil
+			} else if t.Run != nil {
+				if _, err = c.DescribeWorkflowExecution(opCtx, ID(row.WorkspaceID, row.TaskID), ""); err == nil {
+					err = start(opCtx, c, ID(row.WorkspaceID, row.TaskID), Task, in)
+				}
 			} else {
 				err = start(opCtx, c, ID(row.WorkspaceID, row.TaskID), Task, in)
 			}
@@ -95,14 +138,14 @@ func dispatchOnce(ctx context.Context, db *store.Store, c client.Client) {
 		}
 		cancel()
 		if err == nil {
-			if e := db.Delivered(ctx, row.ID); e != nil {
+			if e := db.Delivered(ctx, row); e != nil {
 				slog.Error("outbox acknowledgment failed", "error_type", fmt.Sprintf("%T", e))
 			}
 		} else {
 			if db.Metrics != nil {
 				db.Metrics.OutboxRetries.Add(ctx, 1)
 			}
-			if retryErr := db.RetryOutbox(ctx, row.ID, "Temporal delivery unavailable"); retryErr != nil {
+			if retryErr := db.RetryOutbox(ctx, row, "Temporal delivery unavailable"); retryErr != nil {
 				slog.Error("outbox retry persistence failed", "task_id", row.TaskID, "error_type", fmt.Sprintf("%T", retryErr))
 			}
 			slog.Warn("outbox delivery deferred", "task", row.TaskID, "command", row.Command, "error_type", fmt.Sprintf("%T", err))

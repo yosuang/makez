@@ -131,11 +131,23 @@ func (a *Activities) Prepare(ctx context.Context, in Input) error {
 		if !slices.Contains(caps.Supported, core.SecretInjection) {
 			return fail("UNSUPPORTED_CAPABILITY", fmt.Errorf("missing %s", core.SecretInjection))
 		}
+		if e = a.DB.AdmitTaskAction(ctx, t.WorkspaceID, t.ID, "secret_resolution"); e != nil {
+			return fail("PRINCIPAL_REVOKED", e)
+		}
 		if _, e = a.resolveSecrets(ctx, t.WorkspaceID, plan.SecretRefs); e != nil {
 			return e
 		}
 	}
 	if t.Run.Sandbox == nil {
+		phase, err := a.DB.OperationPhase(ctx, t.Run.ID, "sandbox")
+		if err != nil {
+			return err
+		}
+		if phase == "" {
+			if err = a.DB.AdmitTaskAction(ctx, t.WorkspaceID, t.ID, "sandbox_create"); err != nil {
+				return fail("PRINCIPAL_REVOKED", err)
+			}
+		}
 		req := core.SandboxRequest{Key: key(t, "sandbox"), RuntimeProfileID: t.ProfileID, RuntimeProfileVersion: t.ProfileVersion, ExpiresAt: t.Deadline.Add(15 * time.Minute), Limits: core.ResourceLimits{MilliCPU: 1000, MemoryBytes: 512 << 20}}
 		_, claimed, e := a.DB.BeginOperation(ctx, t.Run.ID, "sandbox", hash(req))
 		if e != nil {
@@ -217,9 +229,17 @@ func (a *Activities) Launch(ctx context.Context, in Input) error {
 		return e
 	}
 	if phase == "" {
+		if e = a.DB.AdmitTaskAction(ctx, t.WorkspaceID, t.ID, "secret_resolution"); e != nil {
+			return fail("PRINCIPAL_REVOKED", e)
+		}
 		req.SecretValues, e = a.resolveSecrets(ctx, t.WorkspaceID, p.SecretRefs)
 		if e != nil {
 			return e
+		}
+	}
+	if phase == "" {
+		if e = a.DB.AdmitTaskAction(ctx, t.WorkspaceID, t.ID, "launch"); e != nil {
+			return fail("PRINCIPAL_REVOKED", e)
 		}
 	}
 	_, claimed, e := a.DB.BeginOperation(ctx, t.Run.ID, "agent", hash(req))

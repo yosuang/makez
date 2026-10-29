@@ -8,12 +8,12 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/makez-dev/makez/internal/core"
+	"github.com/makez-dev/makez/internal/store/dbgen"
 )
 
 // ClaimObserver advances the observer epoch to fence out stale output writers.
 func (s *Store) ClaimObserver(ctx context.Context, runID string) (int64, error) {
-	var epoch int64
-	err := s.pool.QueryRow(ctx, `UPDATE makez_runs SET observer_epoch=observer_epoch+1 WHERE id=$1 AND state NOT IN ('SUCCEEDED','FAILED','CANCELED') RETURNING observer_epoch`, runID).Scan(&epoch)
+	epoch, err := dbgen.New(s.pool).ClaimOutputObserver(ctx, runID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		err = ErrConflict
 	}
@@ -30,9 +30,9 @@ func (s *Store) AppendOutput(ctx context.Context, runID string, epoch int64, cur
 		return err
 	}
 	defer tx.Rollback(ctx) //nolint:errcheck // Commit closes the transaction; pgx discards the connection on rollback failure.
-	var current int64
-	var state core.RunState
-	if err = tx.QueryRow(ctx, `SELECT observer_epoch,state FROM makez_runs WHERE id=$1 FOR UPDATE`, runID).Scan(&current, &state); err != nil {
+	locked, err := dbgen.New(tx).LockRun(ctx, runID)
+	current, state := locked.ObserverEpoch, core.RunState(locked.State)
+	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			err = ErrNotFound
 		}
@@ -48,12 +48,12 @@ func (s *Store) AppendOutput(ctx context.Context, runID string, epoch int64, cur
 		if event.SourceOffset == "" || len(event.SourceOffset) > 4096 || len(event.Kind) > 128 || event.Kind == "" || len(event.Payload) > 64<<10 || !json.Valid(event.Payload) {
 			return fmt.Errorf("invalid event")
 		}
-		_, err = tx.Exec(ctx, `INSERT INTO makez_events(run_id,source_offset,item_index,type,payload) VALUES($1,$2,$3,$4,$5) ON CONFLICT(run_id,source_offset,item_index) DO NOTHING`, runID, event.SourceOffset, int64(event.Index), event.Kind, event.Payload)
+		_, err = dbgen.New(tx).InsertOutput(ctx, dbgen.InsertOutputParams{RunID: runID, SourceOffset: event.SourceOffset, ItemIndex: int64(event.Index), Type: event.Kind, Payload: event.Payload})
 		if err != nil {
 			return err
 		}
 	}
-	_, err = tx.Exec(ctx, `UPDATE makez_runs SET cursor=$2,parser_state=$3,version=version+1 WHERE id=$1`, runID, cursor, nonNil(parser))
+	_, err = dbgen.New(tx).SaveOutputCursor(ctx, dbgen.SaveOutputCursorParams{ID: runID, Cursor: cursor, ParserState: nonNil(parser)})
 	if err != nil {
 		return err
 	}
@@ -65,11 +65,7 @@ const EventPageSize = 500
 
 // Events returns task events after a replay sequence number.
 func (s *Store) Events(ctx context.Context, workspace, taskID string, after int64) ([]Event, error) {
-	var raw []byte
-	// The outer row checks workspace ownership even when no run/events exist.
-	err := s.pool.QueryRow(ctx, `SELECT COALESCE((SELECT jsonb_agg(page ORDER BY page.seq) FROM
- (SELECT e.seq,e.run_id,e.type,e.payload,e.created_at FROM makez_events e JOIN makez_runs r ON r.id=e.run_id WHERE r.task_id=t.id AND e.seq>$3 ORDER BY e.seq LIMIT 500) page),'[]'::jsonb)
- FROM makez_tasks t WHERE t.workspace_id=$1 AND t.id=$2`, workspace, taskID, after).Scan(&raw)
+	raw, err := dbgen.New(s.pool).GetEvents(ctx, dbgen.GetEventsParams{WorkspaceID: workspace, ID: taskID, Seq: after})
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -86,67 +82,71 @@ func (s *Store) Artifacts(ctx context.Context, workspace, taskID string) ([]Arti
 	if _, err := s.Get(ctx, workspace, taskID); err != nil {
 		return nil, err
 	}
-	rows, err := s.pool.Query(ctx, `SELECT a.id,a.run_id,a.path,a.storage_key,a.sha256,a.media_type,a.size FROM makez_artifacts a JOIN makez_runs r ON r.id=a.run_id JOIN makez_tasks t ON t.id=r.task_id WHERE t.workspace_id=$1 AND t.id=$2 ORDER BY a.path`, workspace, taskID)
+	rows, err := dbgen.New(s.pool).ListArtifacts(ctx, dbgen.ListArtifactsParams{WorkspaceID: workspace, TaskID: taskID})
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	artifacts := []Artifact{}
-	for rows.Next() {
-		a, e := scanArtifact(rows)
-		if e != nil {
-			return nil, e
-		}
-		artifacts = append(artifacts, a)
+	result := make([]Artifact, 0, len(rows))
+	for _, r := range rows {
+		result = append(result, artifactFromRow(r))
 	}
-	return artifacts, rows.Err()
+	return result, nil
 }
-func scanArtifact(row rowScanner) (Artifact, error) {
-	var a Artifact
-	err := row.Scan(&a.ID, &a.RunID, &a.Path, &a.StorageKey, &a.SHA256, &a.MediaType, &a.Size)
-	if errors.Is(err, pgx.ErrNoRows) {
-		err = ErrNotFound
-	}
-	return a, err
+func artifactFromRow(r dbgen.MakezArtifact) Artifact {
+	return Artifact{ID: r.ID, RunID: r.RunID, Path: r.Path, StorageKey: r.StorageKey, SHA256: r.Sha256, MediaType: r.MediaType, Size: r.Size}
 }
 
 // Artifact loads one published artifact within its workspace.
 func (s *Store) Artifact(ctx context.Context, workspace, id string) (Artifact, error) {
-	return scanArtifact(s.pool.QueryRow(ctx, `SELECT a.id,a.run_id,a.path,a.storage_key,a.sha256,a.media_type,a.size FROM makez_artifacts a JOIN makez_runs r ON r.id=a.run_id JOIN makez_tasks t ON t.id=r.task_id WHERE t.workspace_id=$1 AND a.id=$2`, workspace, id))
+	r, err := dbgen.New(s.pool).GetArtifact(ctx, dbgen.GetArtifactParams{WorkspaceID: workspace, ID: id})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Artifact{}, ErrNotFound
+	}
+	return artifactFromRow(r), err
 }
 
-// Pending lists a batch of outbox commands due for dispatch.
+// Pending claims due commands; callers must retain the returned fencing tokens.
 func (s *Store) Pending(ctx context.Context, limit int) ([]Outbox, error) {
 	if limit < 1 || limit > 500 {
 		limit = 100
 	}
-	rows, err := s.pool.Query(ctx, `SELECT id,workspace_id,task_id,run_id,command,attempts,last_error FROM makez_outbox WHERE delivered_at IS NULL AND next_attempt_at<=now() ORDER BY next_attempt_at,id LIMIT $1`, limit)
+	rows, err := dbgen.New(s.pool).ClaimOutbox(ctx, dbgen.ClaimOutboxParams{Limit: int32(limit), LeaseOwner: new(newID())})
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	pending := []Outbox{}
-	for rows.Next() {
-		var o Outbox
-		if err = rows.Scan(&o.ID, &o.WorkspaceID, &o.TaskID, &o.RunID, &o.Command, &o.Attempts, &o.LastError); err != nil {
-			return nil, err
-		}
-		pending = append(pending, o)
+	pending := make([]Outbox, 0, len(rows))
+	for _, row := range rows {
+		pending = append(pending, Outbox{ID: row.ID, WorkspaceID: row.WorkspaceID, TaskID: row.TaskID, RunID: row.RunID, Command: row.Command, Attempts: int(row.Attempts), LastError: row.LastError, LeaseOwner: *row.LeaseOwner, LeaseToken: row.LeaseToken})
 	}
-	return pending, rows.Err()
+	return pending, nil
 }
 
-// Delivered marks an outbox command as delivered.
-func (s *Store) Delivered(ctx context.Context, id string) error {
-	_, err := s.pool.Exec(ctx, `UPDATE makez_outbox SET delivered_at=COALESCE(delivered_at,now()),last_error='' WHERE id=$1`, id)
+// Delivered acknowledges only the current unexpired lease.
+func (s *Store) Delivered(ctx context.Context, row Outbox) error {
+	count, err := dbgen.New(s.pool).AckOutbox(ctx, dbgen.AckOutboxParams{ID: row.ID, LeaseOwner: new(row.LeaseOwner), LeaseToken: row.LeaseToken})
+	if err == nil && count != 1 {
+		return ErrStale
+	}
 	return err
 }
 
-// RetryOutbox records a failed dispatch attempt and schedules its retry.
-func (s *Store) RetryOutbox(ctx context.Context, id, reason string) error {
+// RetryOutbox releases a current lease with bounded jitter and a dead-letter limit.
+func (s *Store) RetryOutbox(ctx context.Context, row Outbox, reason string) error {
 	if len(reason) > 2048 {
 		reason = reason[:2048]
 	}
-	_, err := s.pool.Exec(ctx, `UPDATE makez_outbox SET attempts=attempts+1,last_error=$2,next_attempt_at=now()+make_interval(secs=>LEAST(60,power(2,LEAST(attempts,6)))::integer) WHERE id=$1 AND delivered_at IS NULL`, id, reason)
+	count, err := dbgen.New(s.pool).RetryClaimedOutbox(ctx, dbgen.RetryClaimedOutboxParams{ID: row.ID, LeaseOwner: new(row.LeaseOwner), LeaseToken: row.LeaseToken, LastError: reason})
+	if err == nil && count != 1 {
+		return ErrStale
+	}
+	return err
+}
+
+// ReplayOutbox explicitly requeues a dead command without changing its identity.
+func (s *Store) ReplayOutbox(ctx context.Context, workspace, id string) error {
+	count, err := dbgen.New(s.pool).ReplayDeadOutbox(ctx, dbgen.ReplayDeadOutboxParams{ID: id, WorkspaceID: workspace})
+	if err == nil && count != 1 {
+		return ErrNotFound
+	}
 	return err
 }

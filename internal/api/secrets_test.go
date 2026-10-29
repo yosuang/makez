@@ -38,9 +38,9 @@ func TestAPISecretReferencesAreWorkspaceScopedWithoutReadingCredentials(t *testi
 		t.Fatal(err)
 	}
 	spy := &admissionSecretSpy{SecretResolver: resolver}
-	server := &Server{DB: f.db, Artifacts: f.files, Keys: map[string]string{"token-a": f.workspace, "token-b": f.workspace + "-other"}, Agents: map[string]core.AgentAdapter{"demo@1": authenticatedTestAgent{agent.NewDemo()}}, Secrets: spy}
+	server := &Server{DB: f.db, Artifacts: f.files, Keys: map[string]string{"test-machine-token-a": f.workspace, "test-machine-token-b": f.workspace + "-other"}, Agents: map[string]core.AgentAdapter{"demo@1": authenticatedTestAgent{agent.NewDemo()}}, Secrets: spy}
 	f.handler = server.Handler()
-	response := f.request(t, "POST", "/v1/tasks", `{"prompt":"authenticated Agent request"}`, "auth-task", "token-a")
+	response := f.request(t, "POST", "/v1/tasks", `{"prompt":"authenticated Agent request"}`, "auth-task", "test-machine-token-a")
 	task := taskResponse(t, response, 202)
 	if spy.resolutions != 0 {
 		t.Fatal("API resolved a credential instead of authorizing its reference")
@@ -62,25 +62,25 @@ func TestAPISecretReferencesAreWorkspaceScopedWithoutReadingCredentials(t *testi
 			t.Fatal("credential entered stored request/outbox data")
 		}
 	}
-	denied := f.request(t, "POST", "/v1/tasks", `{"prompt":"another workspace"}`, "foreign-auth", "token-b")
+	denied := f.request(t, "POST", "/v1/tasks", `{"prompt":"another workspace"}`, "foreign-auth", "test-machine-token-b")
 	if denied.Code != 403 || bytes.Contains(denied.Body.Bytes(), []byte(value)) {
 		t.Fatalf("foreign workspace should be denied safely, status=%d", denied.Code)
 	}
 	for _, body := range []string{`{"prompt":"raw credential","secret_values":{"CODEX_ACCESS_TOKEN":"` + value + `"}}`, `{"prompt":"override binding","secret_refs":{"CODEX_ACCESS_TOKEN":"other@1"}}`} {
-		got := f.request(t, "POST", "/v1/tasks", body, "injected-credentials", "token-a")
+		got := f.request(t, "POST", "/v1/tasks", body, "injected-credentials", "test-machine-token-a")
 		if got.Code != 400 || bytes.Contains(got.Body.Bytes(), []byte(value)) {
 			t.Fatalf("task must not accept raw credentials or override registered bindings, status=%d", got.Code)
 		}
 	}
 	// Admission remains read-only when a registered credential rotates or disappears.
 	t.Setenv("MAKEZ_API_TEST_AUTH", "")
-	taskResponse(t, f.request(t, "POST", "/v1/tasks", `{"prompt":"defer availability check to execution"}`, "missing-at-admission", "token-a"), 202)
+	taskResponse(t, f.request(t, "POST", "/v1/tasks", `{"prompt":"defer availability check to execution"}`, "missing-at-admission", "test-machine-token-a"), 202)
 	if spy.resolutions != 0 {
 		t.Fatal("admission tried to read a revoked credential")
 	}
 	server.Secrets = nil
 	f.handler = server.Handler()
-	if got := f.request(t, "POST", "/v1/tasks", `{"prompt":"no resolver"}`, "missing-resolver", "token-a"); got.Code != 403 {
+	if got := f.request(t, "POST", "/v1/tasks", `{"prompt":"no resolver"}`, "missing-resolver", "test-machine-token-a"); got.Code != 403 {
 		t.Fatalf("missing authentication registry should be denied, status=%d", got.Code)
 	}
 }

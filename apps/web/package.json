@@ -16,6 +16,7 @@
     "react-dom": "19.3.1"
   },
   "devDependencies": {
+    "@playwright/test": "1.56.1",
     "@tailwindcss/vite": "4.3.3",
     "@tanstack/router-plugin": "1.168.47",
     "@types/node": "26.6.5",

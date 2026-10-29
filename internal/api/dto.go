@@ -10,7 +10,9 @@ import (
 
 // ErrorResponse contains the public API error message.
 type ErrorResponse struct {
-	Error string `json:"error"`
+	Error     string `json:"error"`
+	Code      string `json:"code"`
+	RequestID string `json:"request_id"`
 }
 
 // SubmitRequest contains the accepted task submission fields.

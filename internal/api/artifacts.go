@@ -48,8 +48,9 @@ func (s *Server) download(c *echo.Context) error {
 	if err != nil {
 		return err
 	}
-	f, err := s.Artifacts.Open(a.StorageKey)
+	f, err := s.Artifacts.OpenVerified(a.StorageKey, a.SHA256, a.Size)
 	if err != nil {
+		s.Metrics.ArtifactFailure(r.Context(), "download")
 		return err
 	}
 	defer f.Close() //nolint:errcheck // The artifact is read-only and response streaming handles read errors.

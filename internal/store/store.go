@@ -6,7 +6,6 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
-	_ "embed"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -17,11 +16,9 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/makez-dev/makez/internal/core"
+	"github.com/makez-dev/makez/internal/store/dbgen"
 	"github.com/makez-dev/makez/internal/telemetry"
 )
-
-//go:embed schema.sql
-var schema string
 
 // Store owns the PostgreSQL connection pool and persistence metrics.
 type Store struct {
@@ -48,6 +45,17 @@ func OpenWithLimit(ctx context.Context, url string, maxConns int32) (*Store, err
 		return nil, fmt.Errorf("database pool minimum exceeds budget")
 	}
 	config.ConnConfig.ConnectTimeout = 5 * time.Second
+	// Bound application statements and abandoned transactions independently of HTTP
+	// timeouts. Explicit migration connections use their own larger deadline.
+	if _, ok := config.ConnConfig.RuntimeParams["statement_timeout"]; !ok {
+		config.ConnConfig.RuntimeParams["statement_timeout"] = "15000"
+	}
+	if _, ok := config.ConnConfig.RuntimeParams["lock_timeout"]; !ok {
+		config.ConnConfig.RuntimeParams["lock_timeout"] = "5000"
+	}
+	if _, ok := config.ConnConfig.RuntimeParams["idle_in_transaction_session_timeout"]; !ok {
+		config.ConnConfig.RuntimeParams["idle_in_transaction_session_timeout"] = "30000"
+	}
 	pool, err := pgxpool.NewWithConfig(ctx, config)
 	if err != nil {
 		return nil, err
@@ -61,45 +69,6 @@ func OpenWithLimit(ctx context.Context, url string, maxConns int32) (*Store, err
 
 // Close releases all database connections.
 func (s *Store) Close() { s.pool.Close() }
-
-// Migrate applies embedded schema migrations under a database lock.
-func (s *Store) Migrate(ctx context.Context) error {
-	tx, err := s.pool.Begin(ctx)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback(ctx) //nolint:errcheck // Commit closes the transaction; pgx discards the connection on rollback failure.
-	if _, err = tx.Exec(ctx, "SELECT pg_advisory_xact_lock(746302945)"); err != nil {
-		return err
-	}
-	if _, err = tx.Exec(ctx, `CREATE TABLE IF NOT EXISTS makez_schema_migrations (version integer PRIMARY KEY, applied_at timestamptz NOT NULL DEFAULT now())`); err != nil {
-		return err
-	}
-	for index, migration := range []string{schema, `ALTER TABLE makez_runs ADD COLUMN IF NOT EXISTS agent_plan jsonb`, `
-ALTER TABLE makez_runs ADD COLUMN started_at timestamptz;
--- Historical outbox creation times are unknown; age starts at this migration.
-ALTER TABLE makez_outbox ADD COLUMN created_at timestamptz NOT NULL DEFAULT now();
-CREATE INDEX makez_tasks_recovery_cursor ON makez_tasks(created_at,id);
-CREATE INDEX makez_outbox_pending_created ON makez_outbox(created_at) WHERE delivered_at IS NULL;
-CREATE INDEX makez_runs_cleanup_needed ON makez_runs(cleanup) WHERE cleanup IN ('PENDING','BLOCKED');
-`} {
-		version := index + 1
-		var applied bool
-		if err = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM makez_schema_migrations WHERE version=$1)`, version).Scan(&applied); err != nil {
-			return err
-		}
-		if applied {
-			continue
-		}
-		if _, err = tx.Exec(ctx, migration); err != nil {
-			return err
-		}
-		if _, err = tx.Exec(ctx, `INSERT INTO makez_schema_migrations(version) VALUES($1)`, version); err != nil {
-			return err
-		}
-	}
-	return tx.Commit(ctx)
-}
 
 func newID() string {
 	var value [16]byte
@@ -129,53 +98,46 @@ func canonicalConfig(raw json.RawMessage) (json.RawMessage, error) {
 	return json.Marshal(value)
 }
 
-const taskColumns = `t.id,t.workspace_id,t.prompt,t.config,t.agent_id,t.agent_version,t.profile_id,t.profile_version,t.state,t.reason,t.deadline,t.cancel_requested,t.created_at,COALESCE((SELECT last_error FROM makez_outbox WHERE task_id=t.id AND command='START_TASK' AND delivered_at IS NULL),'')`
-
-type rowScanner interface{ Scan(...any) error }
-
-func scanTask(row rowScanner) (Task, error) {
-	var t Task
-	err := row.Scan(&t.ID, &t.WorkspaceID, &t.Prompt, &t.Config, &t.AgentID, &t.AgentVersion, &t.ProfileID, &t.ProfileVersion, &t.State, &t.Reason, &t.Deadline, &t.CancelRequested, &t.CreatedAt, &t.DispatchError)
-	if errors.Is(err, pgx.ErrNoRows) {
-		err = ErrNotFound
-	}
-	return t, err
+func taskFromRow(r dbgen.GetTaskRow) Task {
+	return Task{ID: r.ID, WorkspaceID: r.WorkspaceID, Prompt: r.Prompt, Config: r.Config, AgentID: r.AgentID, AgentVersion: r.AgentVersion, ProfileID: r.ProfileID, ProfileVersion: r.ProfileVersion, State: core.TaskState(r.State), Reason: r.Reason, Deadline: r.Deadline.Time, CancelRequested: r.CancelRequested, CreatedAt: r.CreatedAt.Time, DispatchError: r.DispatchError}
 }
-func scanRun(row rowScanner) (*Run, error) {
-	var r Run
-	var sandbox, process, exit, result, plan []byte
-	err := row.Scan(&r.ID, &r.TaskID, &r.State, &r.BackendID, &sandbox, &process, &r.Cursor, &r.ParserState, &r.ObserverEpoch, &exit, &r.Cleanup, &r.VerifiedStopped, &result, &plan, &r.StartedAt)
+func runFromRow(row dbgen.MakezRun, err error) (*Run, error) {
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}
 	if err != nil {
 		return nil, err
 	}
+	r := &Run{ID: row.ID, TaskID: row.TaskID, State: core.RunState(row.State), BackendID: row.BackendID, Cursor: row.Cursor, ParserState: row.ParserState, ObserverEpoch: row.ObserverEpoch, Cleanup: core.CleanupState(row.Cleanup), VerifiedStopped: row.VerifiedStopped}
+	if row.StartedAt.Valid {
+		r.StartedAt = new(row.StartedAt.Time)
+	}
 	for _, field := range []struct {
 		raw    []byte
 		target any
-	}{{sandbox, &r.Sandbox}, {process, &r.Process}, {exit, &r.Exit}, {result, &r.Result}, {plan, &r.Plan}} {
+	}{{row.Sandbox, &r.Sandbox}, {row.Process, &r.Process}, {row.ProcessExit, &r.Exit}, {row.PreparedResult, &r.Result}, {row.AgentPlan, &r.Plan}} {
 		if len(field.raw) > 0 {
 			if err = json.Unmarshal(field.raw, field.target); err != nil {
 				return nil, err
 			}
 		}
 	}
-	return &r, nil
+	return r, nil
 }
-
-const runColumns = `id,task_id,state,backend_id,sandbox,process,cursor,parser_state,observer_epoch,process_exit,cleanup,verified_stopped,prepared_result,agent_plan,started_at`
-
-func loadRun(ctx context.Context, q interface {
-	QueryRow(context.Context, string, ...any) pgx.Row
-}, taskID string) (*Run, error) {
-	return scanRun(q.QueryRow(ctx, "SELECT "+runColumns+" FROM makez_runs WHERE task_id=$1", taskID))
+func loadRun(ctx context.Context, q *dbgen.Queries, taskID string) (*Run, error) {
+	return runFromRow(q.GetRunByTask(ctx, taskID))
 }
 func taskInTx(ctx context.Context, tx pgx.Tx, workspace, id string) (Task, error) {
-	t, err := scanTask(tx.QueryRow(ctx, "SELECT "+taskColumns+" FROM makez_tasks t WHERE workspace_id=$1 AND id=$2 FOR UPDATE", workspace, id))
-	if err == nil {
-		t.Run, err = loadRun(ctx, tx, id)
+	q := dbgen.New(tx)
+	row, err := q.LockTask(ctx, dbgen.LockTaskParams{WorkspaceID: workspace, ID: id})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Task{}, ErrNotFound
 	}
+	if err != nil {
+		return Task{}, err
+	}
+	t := taskFromRow(dbgen.GetTaskRow(row))
+	t.Run, err = loadRun(ctx, q, id)
 	return t, err
 }
 func enqueue(ctx context.Context, tx pgx.Tx, t Task, command string) error {
@@ -183,7 +145,7 @@ func enqueue(ctx context.Context, tx pgx.Tx, t Task, command string) error {
 	if t.Run != nil {
 		runID = t.Run.ID
 	}
-	_, err := tx.Exec(ctx, `INSERT INTO makez_outbox(id,workspace_id,task_id,run_id,command) VALUES($1,$2,$3,$4,$5) ON CONFLICT(task_id,command) DO NOTHING`, newID(), t.WorkspaceID, t.ID, runID, command)
+	_, err := dbgen.New(tx).EnqueueCommand(ctx, dbgen.EnqueueCommandParams{ID: newID(), WorkspaceID: t.WorkspaceID, TaskID: t.ID, RunID: runID, Command: command})
 	return err
 }
 
@@ -227,8 +189,13 @@ func (s *Store) Submit(ctx context.Context, workspace, key string, input SubmitI
 		return Task{}, false, err
 	}
 	defer tx.Rollback(ctx) //nolint:errcheck // Commit closes the transaction; pgx discards the connection on rollback failure.
-	var previousID, previousHash string
-	err = tx.QueryRow(ctx, `SELECT id,request_hash FROM makez_tasks WHERE workspace_id=$1 AND idempotency_key=$2 FOR UPDATE`, workspace, key).Scan(&previousID, &previousHash)
+	q := dbgen.New(s.pool).WithTx(tx)
+	principal := CurrentPrincipal(ctx)
+	if err = authorizeTx(ctx, q, principal, workspace, "write", false); err != nil {
+		return Task{}, false, err
+	}
+	previous, err := q.FindIdempotency(ctx, dbgen.FindIdempotencyParams{WorkspaceID: workspace, IdempotencyKey: key})
+	previousID, previousHash := previous.ID, previous.RequestHash
 	if err == nil {
 		if previousHash != hash {
 			return Task{}, false, ErrConflict
@@ -249,13 +216,14 @@ func (s *Store) Submit(ctx context.Context, workspace, key string, input SubmitI
 		return Task{}, false, fmt.Errorf("%w: deadline must be within 5 seconds to 90 minutes", ErrInvalidInput)
 	}
 	id := newID()
-	tag, err := tx.Exec(ctx, `INSERT INTO makez_tasks(id,workspace_id,idempotency_key,request_hash,prompt,config,agent_id,agent_version,profile_id,profile_version,state,deadline) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'QUEUED',$11) ON CONFLICT(workspace_id,idempotency_key) DO NOTHING`, id, workspace, key, hash, input.Prompt, input.Config, input.AgentID, input.AgentVersion, input.ProfileID, input.ProfileVersion, input.Deadline)
+	tag, err := dbgen.New(tx).InsertTask(ctx, dbgen.InsertTaskParams{ID: id, WorkspaceID: workspace, IdempotencyKey: key, RequestHash: hash, Prompt: input.Prompt, Config: input.Config, AgentID: input.AgentID, AgentVersion: input.AgentVersion, ProfileID: input.ProfileID, ProfileVersion: input.ProfileVersion, Deadline: timestamp(input.Deadline)})
 	if err != nil {
 		return Task{}, false, err
 	}
-	created := tag.RowsAffected() == 1
-	var existingHash string
-	if err = tx.QueryRow(ctx, `SELECT id,request_hash FROM makez_tasks WHERE workspace_id=$1 AND idempotency_key=$2 FOR UPDATE`, workspace, key).Scan(&id, &existingHash); err != nil {
+	created := tag == 1
+	existing, err := q.FindIdempotency(ctx, dbgen.FindIdempotencyParams{WorkspaceID: workspace, IdempotencyKey: key})
+	id, existingHash := existing.ID, existing.RequestHash
+	if err != nil {
 		return Task{}, false, err
 	}
 	if hash != existingHash {
@@ -266,7 +234,19 @@ func (s *Store) Submit(ctx context.Context, workspace, key string, input SubmitI
 		return Task{}, false, err
 	}
 	if created {
+		actor := dbgen.SaveTaskActorParams{WorkspaceID: workspace, ID: id}
+		if principal.Kind == "user" {
+			actor.SubmittedByUserID = new(principal.ID)
+		} else {
+			actor.SubmittedByMachineID = new(principal.ID)
+		}
+		if err = q.SaveTaskActor(ctx, actor); err != nil {
+			return Task{}, false, err
+		}
 		if err = enqueue(ctx, tx, t, "START_TASK"); err != nil {
+			return Task{}, false, err
+		}
+		if err = audit(ctx, q, workspace, principal, "submit_task", "allowed", id); err != nil {
 			return Task{}, false, err
 		}
 	}
@@ -278,16 +258,30 @@ func (s *Store) Submit(ctx context.Context, workspace, key string, input SubmitI
 
 // Get loads a task within its workspace.
 func (s *Store) Get(ctx context.Context, workspace, id string) (Task, error) {
-	t, err := scanTask(s.pool.QueryRow(ctx, "SELECT "+taskColumns+" FROM makez_tasks t WHERE workspace_id=$1 AND id=$2", workspace, id))
-	if err == nil {
-		t.Run, err = loadRun(ctx, s.pool, id)
+	q := dbgen.New(s.pool)
+	row, err := q.GetTask(ctx, dbgen.GetTaskParams{WorkspaceID: workspace, ID: id})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Task{}, ErrNotFound
 	}
+	if err != nil {
+		return Task{}, err
+	}
+	t := taskFromRow(row)
+	t.Run, err = loadRun(ctx, q, id)
 	return t, err
 }
 
 // List returns recent tasks within a workspace.
 func (s *Store) List(ctx context.Context, workspace string) ([]Task, error) {
-	return s.list(ctx, "WHERE t.workspace_id=$1 ORDER BY t.created_at DESC LIMIT 100", workspace)
+	rows, err := dbgen.New(s.pool).ListTasks(ctx, workspace)
+	if err != nil {
+		return nil, err
+	}
+	tasks := make([]Task, 0, len(rows))
+	for _, r := range rows {
+		tasks = append(tasks, taskFromRow(dbgen.GetTaskRow(r)))
+	}
+	return s.attachRuns(ctx, tasks)
 }
 
 // RecoveryCursor uses an immutable order, so old active tasks cannot starve later ones.
@@ -303,36 +297,27 @@ const RecoveryPageSize = 100
 
 // Recoverable lists tasks requiring execution or cleanup recovery after the cursor.
 func (s *Store) Recoverable(ctx context.Context, after RecoveryCursor) ([]Task, error) {
-	through := after.Through
-	if through.IsZero() {
-		through = time.Now()
+	if after.Through.IsZero() {
+		after.Through = time.Now()
 	}
-	return s.list(ctx, `WHERE (t.state NOT IN ('SUCCEEDED','FAILED','CANCELED') OR EXISTS(SELECT 1 FROM makez_runs r WHERE r.task_id=t.id AND r.cleanup='PENDING')) AND ($2='' OR (t.created_at,t.id)>($1,$2)) AND t.created_at <= $3 ORDER BY t.created_at,t.id LIMIT 100`, after.CreatedAt, after.ID, through)
+	rows, err := dbgen.New(s.pool).RecoveryTasks(ctx, dbgen.RecoveryTasksParams{Column1: timestamp(after.CreatedAt), Column2: after.ID, Column3: timestamp(after.Through)})
+	if err != nil {
+		return nil, err
+	}
+	tasks := make([]Task, 0, len(rows))
+	for _, r := range rows {
+		tasks = append(tasks, taskFromRow(dbgen.GetTaskRow(r)))
+	}
+	return s.attachRuns(ctx, tasks)
 }
-func (s *Store) list(ctx context.Context, where string, args ...any) ([]Task, error) {
-	rows, err := s.pool.Query(ctx, "SELECT "+taskColumns+" FROM makez_tasks t "+where, args...)
-	if err != nil {
-		return nil, err
-	}
-	tasks := []Task{}
-	for rows.Next() {
-		t, e := scanTask(rows)
-		if e != nil {
-			rows.Close()
-			return nil, e
-		}
-		tasks = append(tasks, t)
-	}
-	err = rows.Err()
-	rows.Close()
-	if err != nil {
-		return nil, err
-	}
+func (s *Store) attachRuns(ctx context.Context, tasks []Task) ([]Task, error) {
+	q := dbgen.New(s.pool)
 	for i := range tasks {
-		tasks[i].Run, err = loadRun(ctx, s.pool, tasks[i].ID)
+		run, err := loadRun(ctx, q, tasks[i].ID)
 		if err != nil {
 			return nil, err
 		}
+		tasks[i].Run = run
 	}
 	return tasks, nil
 }
@@ -344,6 +329,10 @@ func (s *Store) Cancel(ctx context.Context, workspace, id string) (Task, error) 
 		return Task{}, err
 	}
 	defer tx.Rollback(ctx) //nolint:errcheck // Commit closes the transaction; pgx discards the connection on rollback failure.
+	q := dbgen.New(s.pool).WithTx(tx)
+	if err = authorizeTx(ctx, q, CurrentPrincipal(ctx), workspace, "write", false); err != nil {
+		return Task{}, err
+	}
 	t, err := taskInTx(ctx, tx, workspace, id)
 	if err != nil {
 		return Task{}, err
@@ -357,7 +346,7 @@ func (s *Store) Cancel(ctx context.Context, workspace, id string) (Task, error) 
 		} else {
 			t.State = core.TaskCanceling
 		}
-		_, err = tx.Exec(ctx, `UPDATE makez_tasks SET state=$2,reason=$3,cancel_requested=true,version=version+1 WHERE id=$1`, id, t.State, t.Reason)
+		_, err = dbgen.New(tx).CancelTaskState(ctx, dbgen.CancelTaskStateParams{ID: id, State: string(t.State), Reason: t.Reason})
 		if err != nil {
 			return Task{}, err
 		}
@@ -396,13 +385,13 @@ func (s *Store) InitializeRun(ctx context.Context, workspace, id, backend string
 			expired = true
 			t.State = core.TaskFailed
 			t.Reason = "DEADLINE_EXCEEDED"
-			_, err = tx.Exec(ctx, `UPDATE makez_tasks SET state=$2,reason=$3,version=version+1 WHERE id=$1`, id, t.State, t.Reason)
+			_, err = dbgen.New(tx).ExpireTaskState(ctx, dbgen.ExpireTaskStateParams{ID: id, State: string(t.State), Reason: t.Reason})
 		} else {
 			initialized = true
 			t.Run = &Run{StartedAt: new(time.Now()), ID: newID(), TaskID: id, State: core.RunPreparing, BackendID: backend, Cleanup: core.CleanupNotRequired}
-			_, err = tx.Exec(ctx, `INSERT INTO makez_runs(id,task_id,state,backend_id,started_at) VALUES($1,$2,$3,$4,$5)`, t.Run.ID, id, t.Run.State, backend, t.Run.StartedAt)
+			_, err = dbgen.New(tx).InitializeBusinessRun(ctx, dbgen.InitializeBusinessRunParams{ID: t.Run.ID, TaskID: id, State: string(t.Run.State), BackendID: backend, StartedAt: timestamp(*t.Run.StartedAt)})
 			if err == nil {
-				_, err = tx.Exec(ctx, `UPDATE makez_tasks SET state='RUNNING',version=version+1 WHERE id=$1`, id)
+				_, err = dbgen.New(tx).MarkTaskRunning(ctx, id)
 				t.State = core.TaskRunning
 			}
 		}
