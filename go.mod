@@ -3,7 +3,7 @@ module github.com/makez-dev/makez
 go 1.27.2
 
 require (
-	github.com/casbin/casbin/v2 v2.123.0
+	github.com/casbin/casbin/v2 v2.135.0
 	github.com/coreos/go-oidc/v3 v3.14.1
 	github.com/go-jose/go-jose/v4 v4.1.4
 	github.com/jackc/pgx/v5 v5.11.0
