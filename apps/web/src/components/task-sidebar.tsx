@@ -12,6 +12,7 @@ import {
 import { cn } from "@makez/ui/lib/utils";
 import { terminal, type Task } from "@/lib/api";
 import { formatAgo } from "@/lib/format";
+import markSvg from "@/assets/mark.svg?raw";
 
 export function TaskSidebar({
   tasks,
@@ -95,13 +96,7 @@ export function TaskSidebar({
             collapsed && "md:h-auto md:flex-col md:items-center md:gap-1 md:px-1 md:pt-2",
           )}
         >
-          <img
-            src="/favicon.svg"
-            width="22"
-            height="22"
-            alt=""
-            className={cn("size-[22px] shrink-0", collapsed ? "md:my-1" : "ml-1.5")}
-          />
+          <Mark className={cn("size-[22px] shrink-0", collapsed ? "md:my-1" : "ml-1.5")} />
           <div
             className={cn(
               "flex items-center",
@@ -324,6 +319,16 @@ function TaskSection({
         </button>
       ))}
     </section>
+  );
+}
+
+function Mark({ className }: { className?: string }) {
+  return (
+    <span
+      aria-hidden="true"
+      className={cn("inline-block text-foreground [&_svg]:block [&_svg]:size-full", className)}
+      dangerouslySetInnerHTML={{ __html: markSvg }}
+    />
   );
 }
 
