@@ -48,7 +48,8 @@ func run() error {
 	if len(os.Args) > 1 {
 		mode = os.Args[1]
 	}
-	if mode == "revoke-machine" || mode == "repair-bootstrap" || mode == "replay-outbox" || mode == "verify-artifacts" {
+	switch mode {
+	case "revoke-machine", "repair-bootstrap", "replay-outbox", "replay-authz-outbox", "outbox-status", "verify-artifacts":
 		return maintenance(mode, os.Args[2:])
 	}
 	if mode == "migrate" {

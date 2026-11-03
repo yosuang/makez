@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -59,11 +60,28 @@ func maintenance(mode string, args []string) error {
 			return errors.New("usage: makez repair-bootstrap USER_ID")
 		}
 		return db.RepairBootstrap(ctx, args[0])
-	case "replay-outbox":
-		if len(args) != 2 {
-			return errors.New("usage: makez replay-outbox WORKSPACE_ID EVENT_ID")
+	case "replay-outbox", "replay-authz-outbox":
+		if len(args) < 2 || len(args) > 3 {
+			return fmt.Errorf("usage: makez %s WORKSPACE_ID EVENT_ID [REASON]", mode)
 		}
-		return db.ReplayOutbox(ctx, args[0], args[1])
+		queue := "task"
+		if mode == "replay-authz-outbox" {
+			queue = "authorization"
+		}
+		reason := "explicit operator replay"
+		if len(args) == 3 {
+			reason = args[2]
+		}
+		return db.ReplayDeadLetter(ctx, args[0], args[1], queue, reason)
+	case "outbox-status":
+		if len(args) != 1 {
+			return errors.New("usage: makez outbox-status WORKSPACE_ID")
+		}
+		report, err := db.OutboxStatus(ctx, args[0])
+		if err != nil {
+			return err
+		}
+		return json.NewEncoder(os.Stdout).Encode(report)
 	default:
 		return errors.New("unsupported maintenance command")
 	}

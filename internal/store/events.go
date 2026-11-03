@@ -105,13 +105,26 @@ func (s *Store) Artifact(ctx context.Context, workspace, id string) (Artifact, e
 	return artifactFromRow(r), err
 }
 
-// Pending claims due commands; callers must retain the returned fencing tokens.
+// Pending recovers expired leases, then claims due commands in a short transaction.
+// Each committed claim consumes one attempt; callers retain its fencing token.
 func (s *Store) Pending(ctx context.Context, limit int) ([]Outbox, error) {
 	if limit < 1 || limit > 500 {
 		limit = 100
 	}
-	rows, err := dbgen.New(s.pool).ClaimOutbox(ctx, dbgen.ClaimOutboxParams{Limit: int32(limit), LeaseOwner: new(newID())})
+	tx, err := s.pool.Begin(ctx)
 	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck // Commit closes the transaction.
+	q := dbgen.New(s.pool).WithTx(tx)
+	if _, err = q.RecoverExpiredOutbox(ctx); err != nil {
+		return nil, err
+	}
+	rows, err := q.ClaimOutbox(ctx, dbgen.ClaimOutboxParams{Limit: int32(limit), LeaseOwner: new(newID())})
+	if err != nil {
+		return nil, err
+	}
+	if err = tx.Commit(ctx); err != nil {
 		return nil, err
 	}
 	pending := make([]Outbox, 0, len(rows))
@@ -130,7 +143,8 @@ func (s *Store) Delivered(ctx context.Context, row Outbox) error {
 	return err
 }
 
-// RetryOutbox releases a current lease with bounded jitter and a dead-letter limit.
+// RetryOutbox releases a current lease without counting the same attempt twice.
+// The final failed attempt is dead-lettered; earlier attempts use bounded jitter.
 func (s *Store) RetryOutbox(ctx context.Context, row Outbox, reason string) error {
 	if len(reason) > 2048 {
 		reason = reason[:2048]
@@ -144,9 +158,5 @@ func (s *Store) RetryOutbox(ctx context.Context, row Outbox, reason string) erro
 
 // ReplayOutbox explicitly requeues a dead command without changing its identity.
 func (s *Store) ReplayOutbox(ctx context.Context, workspace, id string) error {
-	count, err := dbgen.New(s.pool).ReplayDeadOutbox(ctx, dbgen.ReplayDeadOutboxParams{ID: id, WorkspaceID: workspace})
-	if err == nil && count != 1 {
-		return ErrNotFound
-	}
-	return err
+	return s.ReplayDeadLetter(ctx, workspace, id, "task", "explicit operator replay")
 }

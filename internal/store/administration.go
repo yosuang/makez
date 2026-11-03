@@ -82,8 +82,20 @@ type AuthorizationChange struct {
 
 // ClaimAuthorization claims invalidation notifications with the outbox fencing protocol.
 func (s *Store) ClaimAuthorization(ctx context.Context) ([]AuthorizationChange, error) {
-	rows, err := dbgen.New(s.pool).ClaimAuthorization(ctx, new(newID()))
+	tx, err := s.pool.Begin(ctx)
 	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck // Commit closes the transaction.
+	q := dbgen.New(s.pool).WithTx(tx)
+	if _, err = q.RecoverExpiredAuthorization(ctx); err != nil {
+		return nil, err
+	}
+	rows, err := q.ClaimAuthorization(ctx, new(newID()))
+	if err != nil {
+		return nil, err
+	}
+	if err = tx.Commit(ctx); err != nil {
 		return nil, err
 	}
 	result := make([]AuthorizationChange, 0, len(rows))

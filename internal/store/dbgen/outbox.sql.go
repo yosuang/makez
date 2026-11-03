@@ -11,7 +11,7 @@ import (
 
 const ackOutbox = `-- name: AckOutbox :execrows
 UPDATE makez_outbox SET delivered_at=now(),last_error='',lease_owner=NULL,lease_until=NULL
-WHERE id=$1 AND lease_owner=$2 AND lease_token=$3 AND lease_until>now() AND delivered_at IS NULL
+WHERE id=$1 AND lease_owner=$2 AND lease_token=$3 AND lease_until>now() AND delivered_at IS NULL AND dead_at IS NULL
 `
 
 type AckOutboxParams struct {
@@ -32,10 +32,10 @@ const claimOutbox = `-- name: ClaimOutbox :many
 WITH claimed AS (
  SELECT id FROM makez_outbox
  WHERE delivered_at IS NULL AND dead_at IS NULL AND next_attempt_at<=now()
- AND (lease_until IS NULL OR lease_until<=now())
+ AND lease_until IS NULL AND attempts<12
  ORDER BY next_attempt_at,id LIMIT $1 FOR UPDATE SKIP LOCKED
 )
-UPDATE makez_outbox o SET lease_owner=$2,lease_token=o.lease_token+1,
+UPDATE makez_outbox o SET attempts=o.attempts+1,lease_owner=$2,lease_token=o.lease_token+1,
 lease_until=now()+interval '30 seconds'
 FROM claimed WHERE o.id=claimed.id RETURNING o.id, o.workspace_id, o.task_id, o.run_id, o.command, o.attempts, o.last_error, o.next_attempt_at, o.delivered_at, o.created_at, o.lease_owner, o.lease_token, o.lease_until, o.dead_at
 `
@@ -80,8 +80,36 @@ func (q *Queries) ClaimOutbox(ctx context.Context, arg ClaimOutboxParams) ([]Mak
 	return items, nil
 }
 
+const recoverExpiredOutbox = `-- name: RecoverExpiredOutbox :execrows
+
+WITH expired AS (
+ SELECT id FROM makez_outbox
+ WHERE delivered_at IS NULL AND dead_at IS NULL
+ AND (lease_until<=now() OR (lease_until IS NULL AND attempts>=12))
+ ORDER BY next_attempt_at,id LIMIT 100 FOR UPDATE SKIP LOCKED
+)
+UPDATE makez_outbox o SET
+ last_error=CASE WHEN o.attempts>=12 THEN 'delivery dead-lettered; operator replay required' ELSE 'delivery lease expired; outcome may be unknown' END,
+ next_attempt_at=now()+make_interval(secs=>LEAST(300,power(2,LEAST(GREATEST(o.attempts-1,0),8))*(0.75+random()*0.5))),
+ dead_at=CASE WHEN o.attempts>=12 THEN now() ELSE NULL END,
+ lease_owner=NULL,lease_until=NULL
+FROM expired WHERE o.id=expired.id
+`
+
+// Attempts count committed delivery leases since the last operator replay.
+// Upgrade dispatchers together: old versions count explicit retries instead.
+// Historical attempts remain a lower bound; lease_token spans replay cycles.
+func (q *Queries) RecoverExpiredOutbox(ctx context.Context) (int64, error) {
+	result, err := q.db.Exec(ctx, recoverExpiredOutbox)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const replayDeadOutbox = `-- name: ReplayDeadOutbox :execrows
-UPDATE makez_outbox SET dead_at=NULL,attempts=0,next_attempt_at=now(),last_error=''
+UPDATE makez_outbox SET dead_at=NULL,attempts=0,next_attempt_at=now(),last_error='',
+lease_owner=NULL,lease_until=NULL,lease_token=lease_token+1
 WHERE id=$1 AND workspace_id=$2 AND dead_at IS NOT NULL AND delivered_at IS NULL
 `
 
@@ -99,10 +127,10 @@ func (q *Queries) ReplayDeadOutbox(ctx context.Context, arg ReplayDeadOutboxPara
 }
 
 const retryClaimedOutbox = `-- name: RetryClaimedOutbox :execrows
-UPDATE makez_outbox SET attempts=attempts+1,last_error=CASE WHEN attempts>=11 THEN 'delivery dead-lettered; operator replay required' ELSE $4 END,
-next_attempt_at=now()+make_interval(secs=>LEAST(300,power(2,LEAST(attempts,8)))*(0.75+random()*0.5)),
-dead_at=CASE WHEN attempts>=11 THEN now() ELSE NULL END,lease_owner=NULL,lease_until=NULL
-WHERE id=$1 AND lease_owner=$2 AND lease_token=$3 AND lease_until>now() AND delivered_at IS NULL
+UPDATE makez_outbox SET last_error=CASE WHEN attempts>=12 THEN 'delivery dead-lettered; operator replay required' ELSE $4 END,
+next_attempt_at=now()+make_interval(secs=>LEAST(300,power(2,LEAST(GREATEST(attempts-1,0),8))*(0.75+random()*0.5))),
+dead_at=CASE WHEN attempts>=12 THEN now() ELSE NULL END,lease_owner=NULL,lease_until=NULL
+WHERE id=$1 AND lease_owner=$2 AND lease_token=$3 AND lease_until>now() AND delivered_at IS NULL AND dead_at IS NULL
 `
 
 type RetryClaimedOutboxParams struct {
