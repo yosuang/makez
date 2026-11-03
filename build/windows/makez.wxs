@@ -24,7 +24,7 @@
 <?endif?>
 
 <Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
-    <Product Id="*" Name="makez" Version="$(var.ProductVersion)" Language="1033" Manufacturer="makez" UpgradeCode="$(var.UpgradeCode)">
+    <Product Id="*" Name="Makez" Version="$(var.ProductVersion)" Language="1033" Manufacturer="makez" UpgradeCode="$(var.UpgradeCode)">
         <Package Compressed="yes" InstallerVersion="$(var.InstallerVersion)" InstallScope="perMachine"/>
         <MediaTemplate EmbedCab="yes"/>
 

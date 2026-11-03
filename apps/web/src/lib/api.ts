@@ -210,7 +210,7 @@ export async function api(requestScope: string, path: string, options: RequestIn
     response = await fetch(apiURL(path), { ...options, headers });
   } catch (err) {
     if (options.signal?.aborted) throw err;
-    throw new APIError("Cannot reach the makez server. Try again.", 0);
+    throw new APIError("Cannot reach the Makez server. Try again.", 0);
   }
   if (requestScope !== scope) {
     await response.body?.cancel();
