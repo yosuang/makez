@@ -196,6 +196,40 @@ export function apiURL(path: string) {
   return `${base.origin}${prefix}${suffix}`;
 }
 
+// Home and follow-up composers do not edit this. Task Details shows the resulting limit.
+export const defaultTaskTimeoutSeconds = 600;
+
+export async function createTask(
+  token: string,
+  input: {
+    prompt: string;
+    agent: string;
+    timeoutSeconds?: number;
+    delaySeconds?: number;
+  },
+  attempt: { current: { body: string; key: string } | null },
+) {
+  const [agent_id, agent_version = ""] = input.agent.split("@");
+  const body = JSON.stringify({
+    prompt: input.prompt,
+    agent_id,
+    agent_version,
+    timeout_seconds: input.timeoutSeconds ?? defaultTaskTimeoutSeconds,
+    config: agent_id === "demo" ? { delay_seconds: input.delaySeconds ?? 10 } : {},
+  });
+  const next =
+    attempt.current?.body === body ? attempt.current : { body, key: crypto.randomUUID() };
+  attempt.current = next;
+  const task = (await (
+    await api(token, "/v1/tasks", {
+      method: "POST",
+      body,
+      headers: { "Idempotency-Key": next.key },
+    })
+  ).json()) as Task;
+  return task;
+}
+
 export async function api(requestScope: string, path: string, options: RequestInit = {}) {
   if (!requestScope || requestScope !== scope)
     throw new DOMException("Workspace changed", "AbortError");

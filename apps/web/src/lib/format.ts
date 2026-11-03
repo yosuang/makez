@@ -58,6 +58,16 @@ export function formatWorked(from: string, now: number) {
   return `${seconds}s`;
 }
 
+export function formatLimit(created: string, deadline: string) {
+  const seconds = Math.round((Date.parse(deadline) - Date.parse(created)) / 1000);
+  if (!Number.isFinite(seconds) || seconds < 0) return "Not set";
+  const minutes = Math.round(seconds / 60);
+  if (seconds >= 60 && Math.abs(seconds - minutes * 60) <= 1) {
+    return minutes === 1 ? "1 minute" : `${minutes} minutes`;
+  }
+  return seconds === 1 ? "1 second" : `${seconds} seconds`;
+}
+
 export function formatBytes(size: number) {
   if (size < 1024) return `${size} B`;
   if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`;

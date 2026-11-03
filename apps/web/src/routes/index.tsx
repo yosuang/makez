@@ -1,14 +1,8 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
 import { Menu } from "lucide-react";
-import {
-  Breadcrumb,
-  BreadcrumbItem,
-  BreadcrumbList,
-  BreadcrumbPage,
-  BreadcrumbSeparator,
-} from "@makez/ui/components/breadcrumb";
 import { Button } from "@makez/ui/components/button";
+import { cn } from "@makez/ui/lib/utils";
 import {
   api,
   isAbort,
@@ -27,6 +21,7 @@ import {
 } from "@/lib/api";
 import { message } from "@/lib/format";
 import { useTask } from "@/lib/use-task";
+import { LoginPage } from "@/components/login-page";
 import { NewTask } from "@/components/new-task";
 import { SettingsDialog } from "@/components/settings-dialog";
 import { TaskDetail } from "@/components/task-detail";
@@ -178,6 +173,30 @@ function Console() {
   }
 
   const current = task ?? tasks.find((item) => item.id === active);
+  const workspace = workspaces.find((item) => item.id === workspaceID);
+
+  function chooseWorkspace(id: string) {
+    const next = workspaces.find((item) => item.id === id);
+    if (!next) return;
+    selectWorkspace(next);
+    setWorkspaceID(next.id);
+  }
+
+  function addTask(created: Task) {
+    setDraft("");
+    setTasks((previous) => [created, ...previous.filter((item) => item.id !== created.id)]);
+    select(created.id);
+  }
+
+  if (!user) {
+    return (
+      <LoginPage
+        pending={booting}
+        error={connectError === "Please sign in again." ? "" : connectError}
+        onSignIn={signIn}
+      />
+    );
+  }
 
   return (
     <div className="flex h-dvh min-h-[500px] overflow-hidden bg-background text-foreground">
@@ -185,71 +204,32 @@ function Console() {
         tasks={tasks}
         active={active}
         onSelect={select}
-        connected={Boolean(token)}
-        savedKey={Boolean(user)}
-        loading={booting || (Boolean(token) && loading)}
+        connected
+        savedKey
+        loading={Boolean(token) && loading}
         error={listError}
         open={sidebarOpen}
         onClose={() => setSidebarOpen(false)}
         onOpenSettings={() => setSettingsOpen(true)}
+        accountName={user.display_name || "Account"}
+        plan={workspace?.role ?? ""}
+        onSignOut={(all) => void signOut(all)}
       />
-      <main className="flex min-w-0 flex-1 flex-col">
-        <header className="flex h-12 shrink-0 items-center gap-2 border-b border-border px-3 md:px-4">
-          <Button
-            variant="ghost"
-            size="icon-sm"
-            className="md:hidden"
-            aria-label="Open task list"
-            onClick={() => setSidebarOpen(true)}
-          >
-            <Menu />
-          </Button>
-          <Breadcrumb>
-            <BreadcrumbList>
-              <BreadcrumbItem>
-                <span className="text-muted-foreground">Workspace</span>
-              </BreadcrumbItem>
-              <BreadcrumbSeparator />
-              <BreadcrumbItem>
-                <BreadcrumbPage>{active ? "Task" : "New task"}</BreadcrumbPage>
-              </BreadcrumbItem>
-            </BreadcrumbList>
-          </Breadcrumb>
-          <div className="ml-auto flex items-center gap-2">
-            {user ? (
-              <>
-                <span className="text-sm">{user.display_name}</span>
-                <select
-                  aria-label="Workspace"
-                  value={workspaceID}
-                  onChange={(event) => {
-                    const next = workspaces.find((w) => w.id === event.target.value);
-                    if (next) {
-                      selectWorkspace(next);
-                      setWorkspaceID(next.id);
-                    }
-                  }}
-                >
-                  {workspaces.map((w) => (
-                    <option key={w.id} value={w.id}>
-                      {w.slug} · {w.role}
-                    </option>
-                  ))}
-                </select>
-                <Button variant="ghost" onClick={() => void signOut(false)}>
-                  Sign out
-                </Button>
-                <Button variant="ghost" onClick={() => void signOut(true)}>
-                  Sign out all
-                </Button>
-              </>
-            ) : (
-              <Button onClick={signIn} disabled={booting}>
-                Sign in with Google
-              </Button>
-            )}
-          </div>
-        </header>
+      <main
+        className={cn(
+          "relative flex min-h-0 min-w-0 flex-1 flex-col",
+          active ? "bg-background" : "bg-surface-sunken",
+        )}
+      >
+        <Button
+          variant="ghost"
+          size="icon-sm"
+          className="absolute top-2 left-2 z-10 md:hidden"
+          aria-label="Open task list"
+          onClick={() => setSidebarOpen(true)}
+        >
+          <Menu />
+        </Button>
         {active ? (
           <TaskDetail
             key={active}
@@ -259,12 +239,15 @@ function Console() {
             artifacts={artifacts}
             error={error}
             streamState={streamState}
+            agents={agents}
+            workspaceSlug={workspace?.slug ?? ""}
             onTask={(updated) => {
               setTask(updated);
               setTasks((previous) =>
                 previous.map((item) => (item.id === updated.id ? { ...item, ...updated } : item)),
               );
             }}
+            onCreated={addTask}
           />
         ) : (
           <NewTask
@@ -274,15 +257,11 @@ function Console() {
             draft={draft}
             onDraftChange={setDraft}
             connectError={connectError}
-            onAccess={signIn}
-            onCreated={(created) => {
-              setDraft("");
-              setTasks((previous) => [
-                created,
-                ...previous.filter((item) => item.id !== created.id),
-              ]);
-              select(created.id);
-            }}
+            workspaces={workspaces}
+            workspaceID={workspaceID}
+            onWorkspace={chooseWorkspace}
+            onOpenSettings={() => setSettingsOpen(true)}
+            onCreated={addTask}
           />
         )}
       </main>

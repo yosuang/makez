@@ -26,11 +26,10 @@ try {
   });
   await page.reload();
   await page.getByRole("button", { name: "Sign in with Google", exact: true }).click();
-  await page.getByRole("button", { name: "Sign out", exact: true }).waitFor();
-  await page.getByLabel("Workspace", { exact: true }).waitFor();
-  await page
-    .getByLabel("Workspace", { exact: true })
-    .selectOption(process.env.MAKEZ_BROWSER_WORKSPACE);
+  await page.getByRole("button", { name: "Account", exact: true }).click();
+  await page.getByRole("menuitem", { name: "Sign out", exact: true }).waitFor();
+  await page.keyboard.press("Escape");
+  await chooseWorkspace(page, process.env.MAKEZ_BROWSER_WORKSPACE);
   assert.equal(new URL(page.url()).origin, origin);
   assert.equal(new URL(page.url()).search, "");
   assert.equal(await page.evaluate(() => localStorage.getItem("makez.token")), null);
@@ -46,15 +45,16 @@ try {
   const download = await downloadPromise;
   assert.equal(await readFile(await download.path(), "utf8"), "verified browser artifact\n");
   await page.screenshot({ path: "/tmp/makez-evidence/browser-artifact.png", fullPage: true });
+  await page.getByRole("button", { name: "New task", exact: true }).click();
+  await chooseWorkspace(page, process.env.MAKEZ_BROWSER_VIEWER_WORKSPACE);
   await page
-    .getByLabel("Workspace", { exact: true })
-    .selectOption(process.env.MAKEZ_BROWSER_VIEWER_WORKSPACE);
-  await page.getByRole("button", { name: "Send", exact: true }).waitFor();
-  assert.ok(await page.getByRole("button", { name: "Send", exact: true }).isDisabled());
+    .getByPlaceholder("Describe the goal and the PR or artifact you want.")
+    .fill("Viewer attempt");
+  const viewerSend = page.getByRole("button", { name: "Send", exact: true });
+  await viewerSend.waitFor();
+  assert.ok(await viewerSend.isDisabled());
   assert.equal(await page.getByText("Completed artifact task", { exact: true }).count(), 0);
-  await page
-    .getByLabel("Workspace", { exact: true })
-    .selectOption(process.env.MAKEZ_BROWSER_WORKSPACE);
+  await chooseWorkspace(page, process.env.MAKEZ_BROWSER_WORKSPACE);
   await page
     .getByPlaceholder("Describe the goal and the PR or artifact you want.")
     .fill("Browser queued task");
@@ -65,8 +65,8 @@ try {
   const second = await context.newPage();
   await Promise.all([page.reload(), second.goto(origin)]);
   await Promise.all([
-    page.getByRole("button", { name: "Sign out", exact: true }).waitFor(),
-    second.getByRole("button", { name: "Sign out", exact: true }).waitFor(),
+    page.getByRole("button", { name: "Account", exact: true }).waitFor(),
+    second.getByRole("button", { name: "Account", exact: true }).waitFor(),
   ]);
   assert.ok(credentials.length >= 2);
   const revoke = await fetch(
@@ -81,18 +81,23 @@ try {
     },
   );
   assert.equal(revoke.status, 204);
-  await page
-    .getByLabel("Workspace", { exact: true })
-    .selectOption(process.env.MAKEZ_BROWSER_WORKSPACE);
+  await chooseWorkspace(page, process.env.MAKEZ_BROWSER_WORKSPACE);
   await page.waitForFunction(() =>
-    document
-      .querySelector('select[aria-label="Workspace"]')
-      ?.selectedOptions[0]?.textContent.includes("Viewer"),
+    document.querySelector('[aria-label="Workspace"]')?.textContent?.includes("Viewer"),
   );
-  assert.ok(await page.getByRole("button", { name: "Send", exact: true }).isDisabled());
+  await page
+    .getByPlaceholder("Describe the goal and the PR or artifact you want.")
+    .fill("After revoke");
+  await page.waitForFunction(() => {
+    const button = [...document.querySelectorAll("button")].find(
+      (item) => item.querySelector(".sr-only")?.textContent === "Send",
+    );
+    return button instanceof HTMLButtonElement && button.disabled;
+  });
   for (const value of await page.evaluate(() => Object.values(localStorage)))
     assert.ok(!credentials.some((token) => value.includes(token)));
-  await page.getByRole("button", { name: "Sign out all", exact: true }).click();
+  await page.getByRole("button", { name: "Account", exact: true }).click();
+  await page.getByRole("menuitem", { name: "Sign out all", exact: true }).click();
   await Promise.all([
     page.getByRole("button", { name: "Sign in with Google", exact: true }).waitFor(),
     second.getByRole("button", { name: "Sign in with Google", exact: true }).waitFor(),
@@ -105,4 +110,9 @@ try {
 } finally {
   await context.close();
   await browser.close();
+}
+
+async function chooseWorkspace(page, id) {
+  await page.getByRole("button", { name: "Workspace", exact: true }).click();
+  await page.locator(`[data-workspace-id="${id}"]`).click();
 }

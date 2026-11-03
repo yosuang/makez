@@ -9,9 +9,16 @@ import {
   CommandItem,
   CommandList,
 } from "@makez/ui/components/command";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuGroup,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@makez/ui/components/dropdown-menu";
 import { cn } from "@makez/ui/lib/utils";
 import { terminal, type Task } from "@/lib/api";
-import { formatAgo } from "@/lib/format";
 import markSvg from "@/assets/mark.svg?raw";
 
 export function TaskSidebar({
@@ -25,6 +32,9 @@ export function TaskSidebar({
   open,
   onClose,
   onOpenSettings,
+  accountName,
+  plan,
+  onSignOut,
 }: {
   tasks: Task[];
   active: string;
@@ -36,6 +46,9 @@ export function TaskSidebar({
   open: boolean;
   onClose: () => void;
   onOpenSettings: () => void;
+  accountName: string;
+  plan: string;
+  onSignOut: (all: boolean) => void;
 }) {
   const [now, setNow] = useState(() => Date.now());
   const [collapsed, setCollapsed] = useState(false);
@@ -59,8 +72,7 @@ export function TaskSidebar({
     return () => window.removeEventListener("keydown", onKey, true);
   }, []);
 
-  const working = tasks.filter((item) => !terminal(item.state));
-  const settled = tasks.filter((item) => terminal(item.state));
+  const groups = groupTasks(tasks, now);
 
   function openSearch() {
     setQuery("");
@@ -76,6 +88,7 @@ export function TaskSidebar({
     <>
       {open && (
         <button
+          type="button"
           className="fixed inset-0 z-20 bg-black/50 md:hidden"
           aria-label="Close task list"
           onClick={onClose}
@@ -127,15 +140,14 @@ export function TaskSidebar({
         </div>
         <div className={cn("px-2 pt-2", collapsed && "md:flex md:justify-center md:px-1")}>
           <Button
-            variant="outline"
             className={cn(
-              "h-8 w-full justify-start bg-surface-hover",
-              collapsed && "md:w-8 md:justify-center md:px-0",
+              "w-full justify-start",
+              collapsed && "md:size-8 md:justify-center md:px-0",
             )}
             aria-label="New task"
             onClick={() => onSelect("")}
           >
-            <Plus />
+            <Plus data-icon="inline-start" />
             <span className={cn(collapsed && "md:sr-only")}>New task</span>
           </Button>
         </div>
@@ -152,24 +164,15 @@ export function TaskSidebar({
             ) : !tasks.length ? (
               <p className="px-2 py-3 text-xs text-muted-foreground">No tasks yet.</p>
             ) : (
-              <>
+              groups.map((group) => (
                 <TaskSection
-                  title="Working"
-                  count={working.length}
-                  tasks={working}
+                  key={group.title}
+                  title={group.title}
+                  tasks={group.tasks}
                   active={active}
-                  now={now}
                   onSelect={onSelect}
                 />
-                <TaskSection
-                  title="Settled"
-                  count={settled.length}
-                  tasks={settled}
-                  active={active}
-                  now={now}
-                  onSelect={onSelect}
-                />
-              </>
+              ))
             )}
             {error && (
               <p className="px-2 py-2 text-xs text-destructive" role="alert">
@@ -178,32 +181,44 @@ export function TaskSidebar({
             )}
           </nav>
         </div>
-        <div
-          className={cn(
-            "flex items-center gap-2 border-t border-border px-2 py-2",
-            collapsed && "md:flex-col md:gap-1 md:px-1",
-          )}
-        >
-          <div
-            className={cn(
-              "flex min-w-0 flex-1 items-center gap-2 px-1",
-              collapsed && "md:flex-none md:justify-center md:px-0",
-            )}
-          >
-            <span className="flex size-7 shrink-0 items-center justify-center rounded-full border border-border bg-muted text-muted-foreground">
-              <UserRound className="size-3.5" />
-            </span>
-            <span className={cn("truncate text-sm", collapsed && "md:sr-only")}>User</span>
-          </div>
-          <Button
-            variant="ghost"
-            size="icon-sm"
-            aria-label="Settings"
-            title="Settings"
-            onClick={onOpenSettings}
-          >
-            <Settings />
-          </Button>
+        <div className={cn("border-t border-border p-2", collapsed && "md:px-1")}>
+          <DropdownMenu>
+            <DropdownMenuTrigger
+              render={
+                <Button
+                  variant="ghost"
+                  aria-label="Account"
+                  className={cn(
+                    "h-auto w-full justify-start px-2 py-1.5",
+                    collapsed && "md:size-8 md:justify-center md:px-0",
+                  )}
+                />
+              }
+            >
+              <span className="flex size-7 shrink-0 items-center justify-center rounded-full border border-border bg-muted text-muted-foreground">
+                <UserRound />
+              </span>
+              <span className={cn("min-w-0 flex-1 text-left", collapsed && "md:sr-only")}>
+                <span className="block truncate text-sm">{accountName}</span>
+                {plan && (
+                  <span className="block truncate text-xs text-muted-foreground">{plan}</span>
+                )}
+              </span>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent side="top" align="start" className="min-w-56">
+              <DropdownMenuGroup>
+                <DropdownMenuItem onClick={onOpenSettings}>
+                  <Settings />
+                  Settings
+                </DropdownMenuItem>
+              </DropdownMenuGroup>
+              <DropdownMenuSeparator />
+              <DropdownMenuGroup>
+                <DropdownMenuItem onClick={() => onSignOut(false)}>Sign out</DropdownMenuItem>
+                <DropdownMenuItem onClick={() => onSignOut(true)}>Sign out all</DropdownMenuItem>
+              </DropdownMenuGroup>
+            </DropdownMenuContent>
+          </DropdownMenu>
         </div>
       </aside>
       <CommandDialog
@@ -230,96 +245,98 @@ export function TaskSidebar({
               New task
             </CommandItem>
           </CommandGroup>
-          {working.length > 0 && (
-            <CommandGroup heading="Working">
-              {working.map((item) => (
-                <TaskCommandItem key={item.id} task={item} now={now} onSelect={choose} />
+          {groups.map((group) => (
+            <CommandGroup key={group.title} heading={group.title}>
+              {group.tasks.map((item) => (
+                <TaskCommandItem key={item.id} task={item} onSelect={choose} />
               ))}
             </CommandGroup>
-          )}
-          {settled.length > 0 && (
-            <CommandGroup heading="Settled">
-              {settled.map((item) => (
-                <TaskCommandItem key={item.id} task={item} now={now} onSelect={choose} />
-              ))}
-            </CommandGroup>
-          )}
+          ))}
         </CommandList>
       </CommandDialog>
     </>
   );
 }
 
-function TaskCommandItem({
-  task,
-  now,
-  onSelect,
-}: {
-  task: Task;
-  now: number;
-  onSelect: (id: string) => void;
-}) {
+function TaskCommandItem({ task, onSelect }: { task: Task; onSelect: (id: string) => void }) {
+  const running = !terminal(task.state);
   return (
     <CommandItem
       value={task.id}
       keywords={[task.prompt, task.agent_id]}
       onSelect={() => onSelect(task.id)}
     >
-      <span className={cn("size-1.5 shrink-0 rounded-full", dotClass(task.state))} />
       <span className="min-w-0 flex-1 truncate">{task.prompt}</span>
-      <span className="max-w-28 shrink-0 truncate text-xs text-muted-foreground">
-        {task.agent_id}
-      </span>
-      <span className="w-8 shrink-0 text-right text-xs text-muted-foreground">
-        {formatAgo(task.created_at, now)}
-      </span>
+      {running && <RunningDot />}
     </CommandItem>
   );
 }
 
 function TaskSection({
   title,
-  count,
   tasks,
   active,
-  now,
   onSelect,
 }: {
   title: string;
-  count: number;
   tasks: Task[];
   active: string;
-  now: number;
   onSelect: (id: string) => void;
 }) {
   return (
     <section>
-      <div className="flex items-center justify-between px-2 pt-3 pb-1 text-[11px] text-text-faint">
-        <span>{title}</span>
-        <span>{count}</span>
-      </div>
-      {tasks.map((item) => (
-        <button
-          key={item.id}
-          className={cn(
-            "flex w-full items-start gap-2 rounded-md px-2 py-1.5 text-left",
-            active === item.id ? "bg-surface-active" : "hover:bg-surface-hover",
-          )}
-          aria-current={active === item.id ? "page" : undefined}
-          onClick={() => onSelect(item.id)}
-        >
-          <span className="min-w-0 flex-1">
-            <span className="block truncate text-[13px] text-text-secondary">{item.prompt}</span>
-            <span className="mt-0.5 flex items-center justify-between gap-2 text-[11px] text-text-faint">
-              <span className="truncate">{item.agent_id}</span>
-              <span className="shrink-0">{formatAgo(item.created_at, now)}</span>
+      <h2 className="px-2 pt-3 pb-1 text-[11px] text-text-faint">{title}</h2>
+      {tasks.map((item) => {
+        const running = !terminal(item.state);
+        return (
+          <button
+            key={item.id}
+            type="button"
+            className={cn(
+              "flex h-8 w-full items-center gap-2 rounded-md px-2 text-left",
+              active === item.id ? "bg-surface-active" : "hover:bg-surface-hover",
+            )}
+            aria-current={active === item.id ? "page" : undefined}
+            title={item.prompt}
+            onClick={() => onSelect(item.id)}
+          >
+            <span className="min-w-0 flex-1 truncate text-[13px] text-text-secondary">
+              {item.prompt}
             </span>
-          </span>
-          <span className={cn("mt-1.5 size-1.5 shrink-0 rounded-full", dotClass(item.state))} />
-        </button>
-      ))}
+            {running && <RunningDot />}
+          </button>
+        );
+      })}
     </section>
   );
+}
+
+function RunningDot() {
+  return (
+    <span className="size-1.5 shrink-0 rounded-full bg-foreground" title="In progress">
+      <span className="sr-only">In progress</span>
+    </span>
+  );
+}
+
+function groupTasks(tasks: Task[], now: number) {
+  const start = new Date(now);
+  start.setHours(0, 0, 0, 0);
+  const todayStart = start.getTime();
+  const weekStart = todayStart - 6 * 24 * 60 * 60 * 1000;
+  const groups = [
+    { title: "Today", tasks: [] as Task[] },
+    { title: "Last 7 days", tasks: [] as Task[] },
+    { title: "Older", tasks: [] as Task[] },
+  ];
+  const sorted = [...tasks].sort((a, b) => Date.parse(b.created_at) - Date.parse(a.created_at));
+  for (const task of sorted) {
+    const created = Date.parse(task.created_at);
+    if (created >= todayStart) groups[0].tasks.push(task);
+    else if (created >= weekStart) groups[1].tasks.push(task);
+    else groups[2].tasks.push(task);
+  }
+  return groups.filter((group) => group.tasks.length > 0);
 }
 
 function Mark({ className }: { className?: string }) {
@@ -330,20 +347,4 @@ function Mark({ className }: { className?: string }) {
       dangerouslySetInnerHTML={{ __html: markSvg }}
     />
   );
-}
-
-function dotClass(state: string) {
-  if (state === "FAILED" || state === "BLOCKED") return "bg-destructive";
-  if (
-    state === "RUNNING" ||
-    state === "PREPARING" ||
-    state === "STARTING" ||
-    state === "STOPPING" ||
-    state === "FINALIZING" ||
-    state === "CANCELING"
-  ) {
-    return "bg-muted-foreground";
-  }
-  if (state === "SUCCEEDED" || state === "DONE") return "bg-foreground";
-  return "bg-text-faint";
 }
