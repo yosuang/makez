@@ -190,8 +190,16 @@ func (a *Activities) Prepare(ctx context.Context, in Input) error {
 		}
 		t.Run.Sandbox = &ref
 	}
-	// A retried Prepare only rewrites immutable input before any launch.
+	// Each write is admitted separately, including immutable input rewrites on
+	// retry. The committed audit admits only this call; revocation can stop the
+	// next file without holding a workspace lock across a provider request.
 	for _, f := range plan.Files {
+		if e = a.DB.AdmitTaskAction(ctx, t.WorkspaceID, t.ID, "prepare_file"); e != nil {
+			if errors.Is(e, store.ErrForbidden) || errors.Is(e, store.ErrNotFound) {
+				return fail("PRINCIPAL_REVOKED", e)
+			}
+			return e
+		}
 		if e = a.Provider.WriteFile(ctx, *t.Run.Sandbox, f.Path, bytes.NewReader(f.Data), int64(len(f.Data))); e != nil {
 			var pe core.ProviderError
 			if errors.As(e, &pe) && (pe.Code() == core.OutcomeUnknown || pe.Code() == core.Transient) {

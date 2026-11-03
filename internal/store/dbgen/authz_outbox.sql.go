@@ -11,7 +11,7 @@ import (
 
 const ackAuthorization = `-- name: AckAuthorization :execrows
 UPDATE makez_authz_outbox SET published_at=now(),lease_owner=NULL,lease_until=NULL
-WHERE id=$1 AND lease_owner=$2 AND lease_token=$3 AND lease_until>now() AND published_at IS NULL
+WHERE id=$1 AND lease_owner=$2 AND lease_token=$3 AND lease_until>now() AND published_at IS NULL AND dead_at IS NULL
 `
 
 type AckAuthorizationParams struct {
@@ -31,9 +31,9 @@ func (q *Queries) AckAuthorization(ctx context.Context, arg AckAuthorizationPara
 const claimAuthorization = `-- name: ClaimAuthorization :many
 WITH claimed AS (
  SELECT id FROM makez_authz_outbox WHERE published_at IS NULL AND dead_at IS NULL AND available_at<=now()
- AND (lease_until IS NULL OR lease_until<=now()) ORDER BY available_at,id LIMIT 20 FOR UPDATE SKIP LOCKED
+ AND lease_until IS NULL AND attempts<12 ORDER BY available_at,id LIMIT 20 FOR UPDATE SKIP LOCKED
 )
-UPDATE makez_authz_outbox o SET lease_owner=$1,lease_token=o.lease_token+1,lease_until=now()+interval '30 seconds'
+UPDATE makez_authz_outbox o SET attempts=o.attempts+1,lease_owner=$1,lease_token=o.lease_token+1,lease_until=now()+interval '30 seconds'
 FROM claimed WHERE o.id=claimed.id RETURNING o.id, o.workspace_id, o.authz_version, o.event_type, o.payload, o.attempts, o.lease_token, o.lease_owner, o.lease_until, o.available_at, o.created_at, o.published_at, o.dead_at
 `
 
@@ -71,10 +71,54 @@ func (q *Queries) ClaimAuthorization(ctx context.Context, leaseOwner *string) ([
 	return items, nil
 }
 
+const recoverExpiredAuthorization = `-- name: RecoverExpiredAuthorization :execrows
+
+WITH expired AS (
+ SELECT id FROM makez_authz_outbox
+ WHERE published_at IS NULL AND dead_at IS NULL
+ AND (lease_until<=now() OR (lease_until IS NULL AND attempts>=12))
+ ORDER BY available_at,id LIMIT 100 FOR UPDATE SKIP LOCKED
+)
+UPDATE makez_authz_outbox o SET
+ available_at=now()+make_interval(secs=>LEAST(300,power(2,LEAST(GREATEST(o.attempts-1,0),8))*(0.75+random()*0.5))),
+ dead_at=CASE WHEN o.attempts>=12 THEN now() ELSE NULL END,
+ lease_owner=NULL,lease_until=NULL
+FROM expired WHERE o.id=expired.id
+`
+
+// Keep delivery budgets, lease duration, and backoff aligned with outbox.sql.
+// Attempts count committed leases, including deliveries interrupted by a crash.
+func (q *Queries) RecoverExpiredAuthorization(ctx context.Context) (int64, error) {
+	result, err := q.db.Exec(ctx, recoverExpiredAuthorization)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const replayDeadAuthorization = `-- name: ReplayDeadAuthorization :execrows
+UPDATE makez_authz_outbox SET dead_at=NULL,attempts=0,available_at=now(),
+lease_owner=NULL,lease_until=NULL,lease_token=lease_token+1
+WHERE id=$1 AND workspace_id=$2 AND dead_at IS NOT NULL AND published_at IS NULL
+`
+
+type ReplayDeadAuthorizationParams struct {
+	ID          string
+	WorkspaceID string
+}
+
+func (q *Queries) ReplayDeadAuthorization(ctx context.Context, arg ReplayDeadAuthorizationParams) (int64, error) {
+	result, err := q.db.Exec(ctx, replayDeadAuthorization, arg.ID, arg.WorkspaceID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const retryAuthorization = `-- name: RetryAuthorization :execrows
-UPDATE makez_authz_outbox SET attempts=attempts+1,available_at=now()+make_interval(secs=>LEAST(300,power(2,LEAST(attempts,8)))*(0.75+random()*0.5)),
-dead_at=CASE WHEN attempts>=11 THEN now() ELSE NULL END,lease_owner=NULL,lease_until=NULL
-WHERE id=$1 AND lease_owner=$2 AND lease_token=$3 AND lease_until>now() AND published_at IS NULL
+UPDATE makez_authz_outbox SET available_at=now()+make_interval(secs=>LEAST(300,power(2,LEAST(GREATEST(attempts-1,0),8))*(0.75+random()*0.5))),
+dead_at=CASE WHEN attempts>=12 THEN now() ELSE NULL END,lease_owner=NULL,lease_until=NULL
+WHERE id=$1 AND lease_owner=$2 AND lease_token=$3 AND lease_until>now() AND published_at IS NULL AND dead_at IS NULL
 `
 
 type RetryAuthorizationParams struct {
