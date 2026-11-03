@@ -1,8 +1,8 @@
 <div align="center">
   <a href="https://makez.dev">
     <picture>
-      <source media="(prefers-color-scheme: dark)" srcset="build/icon/makez-dark.svg" />
-      <img src="build/icon/makez-light.svg" width="120" alt="makez" />
+      <source media="(prefers-color-scheme: dark)" srcset="build/icon/mark-on-dark.svg" />
+      <img src="build/icon/mark-on-light.svg" width="120" alt="makez" />
     </picture>
   </a>
   <h1>makez</h1>

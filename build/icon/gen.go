@@ -1,9 +1,16 @@
-// Command icon writes the makez icon as two SVGs from one mark.
+// Command icon writes the makez icon variants from one mark.
 //
-// Both files use the approved mark scaled uniformly by 1.22, with its
+// mark.svg is the transparent in-page Z: no background, fill currentColor,
+// so the console sidebar can color it with the theme. app.svg is the opaque
+// app icon: a black tile with a white Z, for the browser tab only.
+// mark-on-light.svg and mark-on-dark.svg are transparent Zs (black on light,
+// white on dark) for the README picture, which follows prefers-color-scheme.
+// Neither README file has a plate. The console inlines a copy of mark.svg
+// and serves a copy of app.svg as its favicon.
+//
+// Every file uses the approved mark scaled uniformly by 1.22, with its
 // bounding box centered on the 1024 canvas. Each file sets only a viewBox,
-// so it scales to its container. makez-dark.svg is a full black square
-// with a white mark. makez-light.svg has no background and a black mark.
+// so it scales to its container.
 package main
 
 import (
@@ -60,16 +67,39 @@ func main() {
 		fail(err)
 	}
 	dir := filepath.Join(root, "build", "icon")
-	dark := filepath.Join(dir, "makez-dark.svg")
-	light := filepath.Join(dir, "makez-light.svg")
-	if err = os.WriteFile(dark, darkSVG(), 0o644); err != nil {
-		fail(err)
+	app := appSVG()
+	outputs := []struct {
+		path string
+		body []byte
+	}{
+		{filepath.Join(dir, "mark.svg"), markSVG()},
+		{filepath.Join(dir, "app.svg"), app},
+		{filepath.Join(dir, "mark-on-light.svg"), filledMark("#000")},
+		{filepath.Join(dir, "mark-on-dark.svg"), filledMark("#fff")},
+		// Console copies. The sidebar inlines mark.svg so currentColor follows
+		// the theme. The tab icon is the app tile.
+		{filepath.Join(root, "apps", "web", "src", "assets", "mark.svg"), markSVG()},
+		{filepath.Join(root, "apps", "web", "public", "favicon.svg"), app},
 	}
-	if err = os.WriteFile(light, lightSVG(), 0o644); err != nil {
-		fail(err)
+	for _, output := range outputs {
+		if err = os.MkdirAll(filepath.Dir(output.path), 0o755); err != nil {
+			fail(err)
+		}
+		if err = os.WriteFile(output.path, output.body, 0o644); err != nil {
+			fail(err)
+		}
+		rel, relErr := filepath.Rel(root, output.path)
+		if relErr != nil {
+			fail(relErr)
+		}
+		fmt.Println(rel)
 	}
-	fmt.Println(filepath.Join("build", "icon", "makez-dark.svg"))
-	fmt.Println(filepath.Join("build", "icon", "makez-light.svg"))
+	for _, stale := range []string{"makez-dark.svg", "makez-light.svg"} {
+		path := filepath.Join(dir, stale)
+		if err = os.Remove(path); err != nil && !os.IsNotExist(err) {
+			fail(err)
+		}
+	}
 }
 
 func fail(err error) {
@@ -106,7 +136,7 @@ func mark() string {
 	)
 }
 
-func darkSVG() []byte {
+func appSVG() []byte {
 	return []byte(fmt.Sprintf(
 		"<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 %d %d\">\n"+
 			"<rect width=\"%d\" height=\"%d\" fill=\"#000\"/>\n"+
@@ -116,11 +146,15 @@ func darkSVG() []byte {
 	))
 }
 
-func lightSVG() []byte {
+func markSVG() []byte {
+	return filledMark("currentColor")
+}
+
+func filledMark(fill string) []byte {
 	return []byte(fmt.Sprintf(
 		"<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 %d %d\">\n"+
-			"<path fill=\"#000\" d=\"%s\"/>\n"+
+			"<path fill=\"%s\" d=\"%s\"/>\n"+
 			"</svg>\n",
-		view, view, mark(),
+		view, view, fill, mark(),
 	))
 }
