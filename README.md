@@ -1,6 +1,9 @@
 <div align="center">
   <a href="https://makez.dev">
-    <img src="build/icon/app.svg" width="120" alt="makez" />
+    <picture>
+      <source media="(prefers-color-scheme: dark)" srcset="build/icon/mark-on-dark.svg" />
+      <img src="build/icon/mark-on-light.svg" width="120" alt="makez" />
+    </picture>
   </a>
   <h1>makez</h1>
   <p><b>Make building easy.</b> An AI-powered development platform for turning ideas into products.</p>

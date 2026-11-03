@@ -1,12 +1,14 @@
-// Command icon writes the two makez icon variants from one mark.
+// Command icon writes the makez icon variants from one mark.
 //
 // mark.svg is the transparent in-page Z: no background, fill currentColor,
 // so the console sidebar can color it with the theme. app.svg is the opaque
-// app icon: a black tile with a white Z, for the browser tab and the README,
-// where a transparent mark washes out. The console inlines a copy of the
-// mark and serves a copy of the app icon as its favicon.
+// app icon: a black tile with a white Z, for the browser tab only.
+// mark-on-light.svg and mark-on-dark.svg are transparent Zs (black on light,
+// white on dark) for the README picture, which follows prefers-color-scheme.
+// Neither README file has a plate. The console inlines a copy of mark.svg
+// and serves a copy of app.svg as its favicon.
 //
-// Both files use the approved mark scaled uniformly by 1.22, with its
+// Every file uses the approved mark scaled uniformly by 1.22, with its
 // bounding box centered on the 1024 canvas. Each file sets only a viewBox,
 // so it scales to its container.
 package main
@@ -72,8 +74,10 @@ func main() {
 	}{
 		{filepath.Join(dir, "mark.svg"), markSVG()},
 		{filepath.Join(dir, "app.svg"), app},
-		// Console copies of the same two variants. The sidebar inlines mark.svg
-		// so currentColor follows the theme. The tab icon is the app tile.
+		{filepath.Join(dir, "mark-on-light.svg"), filledMark("#000")},
+		{filepath.Join(dir, "mark-on-dark.svg"), filledMark("#fff")},
+		// Console copies. The sidebar inlines mark.svg so currentColor follows
+		// the theme. The tab icon is the app tile.
 		{filepath.Join(root, "apps", "web", "src", "assets", "mark.svg"), markSVG()},
 		{filepath.Join(root, "apps", "web", "public", "favicon.svg"), app},
 	}
@@ -143,10 +147,14 @@ func appSVG() []byte {
 }
 
 func markSVG() []byte {
+	return filledMark("currentColor")
+}
+
+func filledMark(fill string) []byte {
 	return []byte(fmt.Sprintf(
 		"<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 %d %d\">\n"+
-			"<path fill=\"currentColor\" d=\"%s\"/>\n"+
+			"<path fill=\"%s\" d=\"%s\"/>\n"+
 			"</svg>\n",
-		view, view, mark(),
+		view, view, fill, mark(),
 	))
 }
