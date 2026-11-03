@@ -250,7 +250,7 @@ print('Demo Agent: infrastructure fixture; no LLM is called.', flush=True)
 for step in range(3):
     print(f'progress {step + 1}/3', flush=True)
     time.sleep(delay / 3)
-report = '# makez demo result\n\nThis deterministic fixture validates sandbox execution and artifact delivery. No LLM was called.\n\n## Submitted request\n\n' + prompt + '\n'
+report = '# Makez demo result\n\nThis deterministic fixture validates sandbox execution and artifact delivery. No LLM was called.\n\n## Submitted request\n\n' + prompt + '\n'
 (workspace / 'report.md').write_text(report, encoding='utf-8')
 result = {'succeeded': True, 'summary': 'Demo completed: execution, logs and artifacts are available. No LLM was called.', 'artifacts': [{'path': 'report.md', 'media_type': 'text/markdown; charset=utf-8', 'required': True}]}
 temp = workspace / 'result.json.tmp'
