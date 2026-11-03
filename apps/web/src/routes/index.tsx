@@ -21,6 +21,7 @@ import {
 } from "@/lib/api";
 import { message } from "@/lib/format";
 import { useTask } from "@/lib/use-task";
+import { LoginPage } from "@/components/login-page";
 import { NewTask } from "@/components/new-task";
 import { SettingsDialog } from "@/components/settings-dialog";
 import { TaskDetail } from "@/components/task-detail";
@@ -187,24 +188,31 @@ function Console() {
     select(created.id);
   }
 
+  if (!user) {
+    return (
+      <LoginPage
+        pending={booting}
+        error={connectError === "Please sign in again." ? "" : connectError}
+        onSignIn={signIn}
+      />
+    );
+  }
+
   return (
     <div className="flex h-dvh min-h-[500px] overflow-hidden bg-background text-foreground">
       <TaskSidebar
         tasks={tasks}
         active={active}
         onSelect={select}
-        connected={Boolean(token)}
-        savedKey={Boolean(user)}
-        loading={booting || (Boolean(token) && loading)}
+        connected
+        savedKey
+        loading={Boolean(token) && loading}
         error={listError}
         open={sidebarOpen}
         onClose={() => setSidebarOpen(false)}
         onOpenSettings={() => setSettingsOpen(true)}
-        signedIn={Boolean(user)}
-        accountName={user?.display_name || "Account"}
+        accountName={user.display_name || "Account"}
         plan={workspace?.role ?? ""}
-        booting={booting}
-        onSignIn={signIn}
         onSignOut={(all) => void signOut(all)}
       />
       <main
@@ -252,7 +260,7 @@ function Console() {
             workspaces={workspaces}
             workspaceID={workspaceID}
             onWorkspace={chooseWorkspace}
-            onAccess={signIn}
+            onOpenSettings={() => setSettingsOpen(true)}
             onCreated={addTask}
           />
         )}

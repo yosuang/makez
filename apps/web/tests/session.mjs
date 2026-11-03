@@ -29,10 +29,7 @@ try {
   await page.getByRole("button", { name: "Account", exact: true }).click();
   await page.getByRole("menuitem", { name: "Sign out", exact: true }).waitFor();
   await page.keyboard.press("Escape");
-  await page.getByLabel("Workspace", { exact: true }).waitFor();
-  await page
-    .getByLabel("Workspace", { exact: true })
-    .selectOption(process.env.MAKEZ_BROWSER_WORKSPACE);
+  await chooseWorkspace(page, process.env.MAKEZ_BROWSER_WORKSPACE);
   assert.equal(new URL(page.url()).origin, origin);
   assert.equal(new URL(page.url()).search, "");
   assert.equal(await page.evaluate(() => localStorage.getItem("makez.token")), null);
@@ -49,9 +46,7 @@ try {
   assert.equal(await readFile(await download.path(), "utf8"), "verified browser artifact\n");
   await page.screenshot({ path: "/tmp/makez-evidence/browser-artifact.png", fullPage: true });
   await page.getByRole("button", { name: "New task", exact: true }).click();
-  await page
-    .getByLabel("Workspace", { exact: true })
-    .selectOption(process.env.MAKEZ_BROWSER_VIEWER_WORKSPACE);
+  await chooseWorkspace(page, process.env.MAKEZ_BROWSER_VIEWER_WORKSPACE);
   await page
     .getByPlaceholder("Describe the goal and the PR or artifact you want.")
     .fill("Viewer attempt");
@@ -59,9 +54,7 @@ try {
   await viewerSend.waitFor();
   assert.ok(await viewerSend.isDisabled());
   assert.equal(await page.getByText("Completed artifact task", { exact: true }).count(), 0);
-  await page
-    .getByLabel("Workspace", { exact: true })
-    .selectOption(process.env.MAKEZ_BROWSER_WORKSPACE);
+  await chooseWorkspace(page, process.env.MAKEZ_BROWSER_WORKSPACE);
   await page
     .getByPlaceholder("Describe the goal and the PR or artifact you want.")
     .fill("Browser queued task");
@@ -88,13 +81,9 @@ try {
     },
   );
   assert.equal(revoke.status, 204);
-  await page
-    .getByLabel("Workspace", { exact: true })
-    .selectOption(process.env.MAKEZ_BROWSER_WORKSPACE);
+  await chooseWorkspace(page, process.env.MAKEZ_BROWSER_WORKSPACE);
   await page.waitForFunction(() =>
-    document
-      .querySelector('select[aria-label="Workspace"]')
-      ?.selectedOptions[0]?.textContent.includes("Viewer"),
+    document.querySelector('[aria-label="Workspace"]')?.textContent?.includes("Viewer"),
   );
   await page
     .getByPlaceholder("Describe the goal and the PR or artifact you want.")
@@ -121,4 +110,9 @@ try {
 } finally {
   await context.close();
   await browser.close();
+}
+
+async function chooseWorkspace(page, id) {
+  await page.getByRole("button", { name: "Workspace", exact: true }).click();
+  await page.locator(`[data-workspace-id="${id}"]`).click();
 }

@@ -1,6 +1,14 @@
 import { useEffect, useRef, useState, type FormEvent } from "react";
-import { ChevronDown } from "lucide-react";
+import { ChevronDown, Settings } from "lucide-react";
 import { Button } from "@makez/ui/components/button";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuGroup,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuTrigger,
+} from "@makez/ui/components/dropdown-menu";
 import { Input } from "@makez/ui/components/input";
 import { createTask, type Agent, type Task, type Workspace } from "@/lib/api";
 import { message } from "@/lib/format";
@@ -16,7 +24,7 @@ export function NewTask({
   workspaces,
   workspaceID,
   onWorkspace,
-  onAccess,
+  onOpenSettings,
   onCreated,
 }: {
   token: string;
@@ -28,7 +36,7 @@ export function NewTask({
   workspaces: Workspace[];
   workspaceID: string;
   onWorkspace: (id: string) => void;
-  onAccess: () => void;
+  onOpenSettings: () => void;
   onCreated: (task: Task) => void;
 }) {
   const preferred = agents.find((item) => item.ID === "codex") ?? agents[0];
@@ -48,7 +56,7 @@ export function NewTask({
     event.preventDefault();
     if (busy || readOnly) return;
     if (!token) {
-      onAccess();
+      setError("No workspace is available for this account.");
       return;
     }
     if (!agent || !draft.trim()) return;
@@ -73,28 +81,48 @@ export function NewTask({
     }
   }
 
+  const current = workspaces.find((item) => item.id === workspaceID);
+
   return (
     <section className="flex min-h-0 flex-1 items-center overflow-auto bg-surface-sunken px-4 py-10">
       <div className="mx-auto flex w-full max-w-[640px] flex-col gap-3">
         <h1 className="sr-only">New task</h1>
         <div className="flex flex-wrap items-center gap-3">
-          <div className="relative flex items-center">
-            <select
-              aria-label="Workspace"
-              value={workspaces.length ? workspaceID : ""}
-              disabled={!workspaces.length}
-              onChange={(event) => onWorkspace(event.target.value)}
-              className="h-8 max-w-64 appearance-none bg-transparent pr-6 text-sm"
+          <DropdownMenu>
+            <DropdownMenuTrigger
+              render={<Button variant="ghost" aria-label="Workspace" className="h-8 px-2" />}
             >
-              {workspaces.length === 0 && <option value="">No workspace</option>}
-              {workspaces.map((item) => (
-                <option key={item.id} value={item.id}>
-                  {item.slug} · {item.role}
-                </option>
-              ))}
-            </select>
-            <ChevronDown className="pointer-events-none absolute right-0 size-4 text-muted-foreground" />
-          </div>
+              <span className="max-w-64 truncate">
+                {current ? `${current.slug} · ${current.role}` : "No workspace"}
+              </span>
+              <ChevronDown />
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="start" className="w-64!">
+              {workspaces.length ? (
+                <DropdownMenuGroup>
+                  {workspaces.map((item) => (
+                    <DropdownMenuItem
+                      key={item.id}
+                      data-workspace-id={item.id}
+                      onClick={() => onWorkspace(item.id)}
+                    >
+                      {item.slug} · {item.role}
+                    </DropdownMenuItem>
+                  ))}
+                </DropdownMenuGroup>
+              ) : (
+                <DropdownMenuGroup>
+                  <DropdownMenuLabel className="whitespace-normal">
+                    No workspace yet.
+                  </DropdownMenuLabel>
+                  <DropdownMenuItem onClick={onOpenSettings}>
+                    <Settings />
+                    Open Settings
+                  </DropdownMenuItem>
+                </DropdownMenuGroup>
+              )}
+            </DropdownMenuContent>
+          </DropdownMenu>
         </div>
         <form onSubmit={submit} className="flex flex-col gap-3">
           <PromptComposer
@@ -108,7 +136,7 @@ export function NewTask({
             agents={agents}
             onAgentChange={setAgent}
             busy={busy}
-            sendDisabled={readOnly || !agent}
+            sendDisabled={readOnly || !agent || !token}
           />
           {agent.startsWith("demo@") && (
             <div className="flex flex-col gap-2">

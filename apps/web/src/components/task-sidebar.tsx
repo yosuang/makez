@@ -32,11 +32,8 @@ export function TaskSidebar({
   open,
   onClose,
   onOpenSettings,
-  signedIn,
   accountName,
   plan,
-  booting,
-  onSignIn,
   onSignOut,
 }: {
   tasks: Task[];
@@ -49,11 +46,8 @@ export function TaskSidebar({
   open: boolean;
   onClose: () => void;
   onOpenSettings: () => void;
-  signedIn: boolean;
   accountName: string;
   plan: string;
-  booting: boolean;
-  onSignIn: () => void;
   onSignOut: (all: boolean) => void;
 }) {
   const [now, setNow] = useState(() => Date.now());
@@ -188,49 +182,43 @@ export function TaskSidebar({
           </nav>
         </div>
         <div className={cn("border-t border-border p-2", collapsed && "md:px-1")}>
-          {signedIn ? (
-            <DropdownMenu>
-              <DropdownMenuTrigger
-                render={
-                  <Button
-                    variant="ghost"
-                    aria-label="Account"
-                    className={cn(
-                      "h-auto w-full justify-start px-2 py-1.5",
-                      collapsed && "md:size-8 md:justify-center md:px-0",
-                    )}
-                  />
-                }
-              >
-                <span className="flex size-7 shrink-0 items-center justify-center rounded-full border border-border bg-muted text-muted-foreground">
-                  <UserRound />
-                </span>
-                <span className={cn("min-w-0 flex-1 text-left", collapsed && "md:sr-only")}>
-                  <span className="block truncate text-sm">{accountName}</span>
-                  {plan && (
-                    <span className="block truncate text-xs text-muted-foreground">{plan}</span>
+          <DropdownMenu>
+            <DropdownMenuTrigger
+              render={
+                <Button
+                  variant="ghost"
+                  aria-label="Account"
+                  className={cn(
+                    "h-auto w-full justify-start px-2 py-1.5",
+                    collapsed && "md:size-8 md:justify-center md:px-0",
                   )}
-                </span>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent side="top" align="start" className="min-w-56">
-                <DropdownMenuGroup>
-                  <DropdownMenuItem onClick={onOpenSettings}>
-                    <Settings />
-                    Settings
-                  </DropdownMenuItem>
-                </DropdownMenuGroup>
-                <DropdownMenuSeparator />
-                <DropdownMenuGroup>
-                  <DropdownMenuItem onClick={() => onSignOut(false)}>Sign out</DropdownMenuItem>
-                  <DropdownMenuItem onClick={() => onSignOut(true)}>Sign out all</DropdownMenuItem>
-                </DropdownMenuGroup>
-              </DropdownMenuContent>
-            </DropdownMenu>
-          ) : (
-            <Button className="w-full" disabled={booting} onClick={onSignIn}>
-              Sign in with Google
-            </Button>
-          )}
+                />
+              }
+            >
+              <span className="flex size-7 shrink-0 items-center justify-center rounded-full border border-border bg-muted text-muted-foreground">
+                <UserRound />
+              </span>
+              <span className={cn("min-w-0 flex-1 text-left", collapsed && "md:sr-only")}>
+                <span className="block truncate text-sm">{accountName}</span>
+                {plan && (
+                  <span className="block truncate text-xs text-muted-foreground">{plan}</span>
+                )}
+              </span>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent side="top" align="start" className="min-w-56">
+              <DropdownMenuGroup>
+                <DropdownMenuItem onClick={onOpenSettings}>
+                  <Settings />
+                  Settings
+                </DropdownMenuItem>
+              </DropdownMenuGroup>
+              <DropdownMenuSeparator />
+              <DropdownMenuGroup>
+                <DropdownMenuItem onClick={() => onSignOut(false)}>Sign out</DropdownMenuItem>
+                <DropdownMenuItem onClick={() => onSignOut(true)}>Sign out all</DropdownMenuItem>
+              </DropdownMenuGroup>
+            </DropdownMenuContent>
+          </DropdownMenu>
         </div>
       </aside>
       <CommandDialog
