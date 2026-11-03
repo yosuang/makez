@@ -2,8 +2,6 @@ import { useEffect, useRef, useState, type FormEvent } from "react";
 import { ChevronDown } from "lucide-react";
 import { Button } from "@makez/ui/components/button";
 import { Input } from "@makez/ui/components/input";
-import { Switch } from "@makez/ui/components/switch";
-import { cn } from "@makez/ui/lib/utils";
 import { createTask, type Agent, type Task, type Workspace } from "@/lib/api";
 import { message } from "@/lib/format";
 import { PromptComposer, promptSuggestions } from "@/components/prompt-composer";
@@ -37,7 +35,6 @@ export function NewTask({
   const preferredValue = preferred ? `${preferred.ID}@${preferred.Version}` : "";
   const [agent, setAgent] = useState(preferredValue);
   const [delay, setDelay] = useState("10");
-  const [compute, setCompute] = useState<"cloud" | "local">("cloud");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const attempt = useRef<{ body: string; key: string } | null>(null);
@@ -52,10 +49,6 @@ export function NewTask({
     if (busy || readOnly) return;
     if (!token) {
       onAccess();
-      return;
-    }
-    if (compute === "local") {
-      setError("Local compute is not available. Tasks run in the cloud.");
       return;
     }
     if (!agent || !draft.trim()) return;
@@ -102,26 +95,7 @@ export function NewTask({
             </select>
             <ChevronDown className="pointer-events-none absolute right-0 size-4 text-muted-foreground" />
           </div>
-          <div className="flex items-center gap-2 text-sm" role="group" aria-label="Compute">
-            <span className={cn(compute === "cloud" ? "text-foreground" : "text-muted-foreground")}>
-              Cloud
-            </span>
-            <Switch
-              size="sm"
-              checked={compute === "local"}
-              onCheckedChange={(checked) => setCompute(checked ? "local" : "cloud")}
-              aria-label={compute === "local" ? "Local compute" : "Cloud compute"}
-            />
-            <span className={cn(compute === "local" ? "text-foreground" : "text-muted-foreground")}>
-              Local
-            </span>
-          </div>
         </div>
-        {compute === "local" && (
-          <p className="text-sm text-muted-foreground">
-            Local compute is not available. Tasks run in the cloud.
-          </p>
-        )}
         <form onSubmit={submit} className="flex flex-col gap-3">
           <PromptComposer
             id="prompt"
@@ -134,7 +108,7 @@ export function NewTask({
             agents={agents}
             onAgentChange={setAgent}
             busy={busy}
-            sendDisabled={readOnly || !agent || compute === "local"}
+            sendDisabled={readOnly || !agent}
           />
           {agent.startsWith("demo@") && (
             <div className="flex flex-col gap-2">

@@ -52,6 +52,11 @@ function recognitionCtor(): (new () => BrowserSpeech) | null {
   return host.SpeechRecognition ?? host.webkitSpeechRecognition ?? null;
 }
 
+// The shared InputGroup paints a ring on the whole group when its control is focused.
+// Composer cards keep the resting border and leave the caret as the focus cue.
+const quietComposerFocus =
+  "ring-0! has-[[data-slot=input-group-control]:focus-visible]:border-input! has-[[data-slot=input-group-control]:focus-visible]:ring-0!";
+
 export function agentLabel(value: string) {
   if (!value) return "No agent";
   const [id, version] = value.split("@");
@@ -117,7 +122,7 @@ export function PromptComposer({
 
   if (!multiline) {
     return (
-      <InputGroup className={cn("h-10", className)}>
+      <InputGroup className={cn("h-10", quietComposerFocus, className)}>
         <InputGroupAddon align="inline-start">
           <AddMenu disabled={busy} onPick={(prompt) => onValueChange(prompt)} />
         </InputGroupAddon>
@@ -157,7 +162,9 @@ export function PromptComposer({
   }
 
   return (
-    <InputGroup className={cn("h-auto rounded-xl bg-card shadow-sm", className)}>
+    <InputGroup
+      className={cn("h-auto rounded-xl bg-card shadow-sm", quietComposerFocus, className)}
+    >
       <InputGroupTextarea
         id={id}
         placeholder={placeholder}
