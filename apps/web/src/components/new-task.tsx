@@ -1,22 +1,12 @@
 import { useEffect, useRef, useState, type FormEvent } from "react";
-import { ArrowUp, Bot, Clock, KeyRound, LoaderCircle } from "lucide-react";
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuTrigger,
-} from "@makez/ui/components/dropdown-menu";
-import {
-  InputGroup,
-  InputGroupAddon,
-  InputGroupButton,
-  InputGroupInput,
-  InputGroupText,
-  InputGroupTextarea,
-} from "@makez/ui/components/input-group";
-import { Separator } from "@makez/ui/components/separator";
-import { api, type Agent, type Task } from "@/lib/api";
+import { ChevronDown } from "lucide-react";
+import { Button } from "@makez/ui/components/button";
+import { Input } from "@makez/ui/components/input";
+import { Switch } from "@makez/ui/components/switch";
+import { cn } from "@makez/ui/lib/utils";
+import { createTask, type Agent, type Task, type Workspace } from "@/lib/api";
 import { message } from "@/lib/format";
+import { PromptComposer, promptSuggestions } from "@/components/prompt-composer";
 
 export function NewTask({
   token,
@@ -25,6 +15,9 @@ export function NewTask({
   draft,
   onDraftChange,
   connectError,
+  workspaces,
+  workspaceID,
+  onWorkspace,
   onAccess,
   onCreated,
 }: {
@@ -34,14 +27,17 @@ export function NewTask({
   draft: string;
   onDraftChange: (value: string) => void;
   connectError: string;
+  workspaces: Workspace[];
+  workspaceID: string;
+  onWorkspace: (id: string) => void;
   onAccess: () => void;
   onCreated: (task: Task) => void;
 }) {
   const preferred = agents.find((item) => item.ID === "codex") ?? agents[0];
   const preferredValue = preferred ? `${preferred.ID}@${preferred.Version}` : "";
   const [agent, setAgent] = useState(preferredValue);
-  const [timeout, setTimeoutValue] = useState("600");
   const [delay, setDelay] = useState("10");
+  const [compute, setCompute] = useState<"cloud" | "local">("cloud");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const attempt = useRef<{ body: string; key: string } | null>(null);
@@ -53,8 +49,13 @@ export function NewTask({
 
   async function submit(event: FormEvent) {
     event.preventDefault();
+    if (busy || readOnly) return;
     if (!token) {
       onAccess();
+      return;
+    }
+    if (compute === "local") {
+      setError("Local compute is not available. Tasks run in the cloud.");
       return;
     }
     if (!agent || !draft.trim()) return;
@@ -62,25 +63,14 @@ export function NewTask({
       setError("The request cannot exceed 65536 bytes");
       return;
     }
-    const [agent_id, agent_version] = agent.split("@");
-    const body = JSON.stringify({
-      prompt: draft,
-      agent_id,
-      agent_version,
-      timeout_seconds: Number(timeout),
-      config: agent_id === "demo" ? { delay_seconds: Number(delay) } : {},
-    });
-    if (attempt.current?.body !== body) attempt.current = { body, key: crypto.randomUUID() };
     setBusy(true);
     setError("");
     try {
-      const task = (await (
-        await api(token, "/v1/tasks", {
-          method: "POST",
-          body,
-          headers: { "Idempotency-Key": attempt.current.key },
-        })
-      ).json()) as Task;
+      const task = await createTask(
+        token,
+        { prompt: draft, agent, delaySeconds: Number(delay) },
+        attempt,
+      );
       attempt.current = null;
       onCreated(task);
     } catch (err) {
@@ -91,118 +81,111 @@ export function NewTask({
   }
 
   return (
-    <section className="flex flex-1 overflow-auto px-6 py-10">
-      <div className="m-auto w-full max-w-[640px]">
-        <h1 className="mb-6 text-center text-2xl font-medium tracking-tight">
-          What should we run?
-        </h1>
-        <form onSubmit={submit}>
-          <InputGroup className="h-auto rounded-xl">
-            <InputGroupTextarea
-              id="prompt"
-              placeholder="Describe the goal and the PR or artifact you want."
-              value={draft}
-              onChange={(event) => onDraftChange(event.target.value)}
-              required
-              disabled={busy}
-              autoFocus
-              className="min-h-36 px-4 py-3"
+    <section className="flex min-h-0 flex-1 items-center overflow-auto bg-surface-sunken px-4 py-10">
+      <div className="mx-auto flex w-full max-w-[640px] flex-col gap-3">
+        <h1 className="sr-only">New task</h1>
+        <div className="flex flex-wrap items-center gap-3">
+          <div className="relative flex items-center">
+            <select
+              aria-label="Workspace"
+              value={workspaces.length ? workspaceID : ""}
+              disabled={!workspaces.length}
+              onChange={(event) => onWorkspace(event.target.value)}
+              className="h-8 max-w-64 appearance-none bg-transparent pr-6 text-sm"
+            >
+              {workspaces.length === 0 && <option value="">No workspace</option>}
+              {workspaces.map((item) => (
+                <option key={item.id} value={item.id}>
+                  {item.slug} · {item.role}
+                </option>
+              ))}
+            </select>
+            <ChevronDown className="pointer-events-none absolute right-0 size-4 text-muted-foreground" />
+          </div>
+          <div className="flex items-center gap-2 text-sm" role="group" aria-label="Compute">
+            <span className={cn(compute === "cloud" ? "text-foreground" : "text-muted-foreground")}>
+              Cloud
+            </span>
+            <Switch
+              size="sm"
+              checked={compute === "local"}
+              onCheckedChange={(checked) => setCompute(checked ? "local" : "cloud")}
+              aria-label={compute === "local" ? "Local compute" : "Cloud compute"}
             />
-            <InputGroupAddon align="block-end" className="flex-wrap">
-              <DropdownMenu>
-                <DropdownMenuTrigger
-                  disabled={!token || busy || !agents.length}
-                  render={<InputGroupButton variant="ghost" />}
-                >
-                  <Bot />
-                  {agent || "No agent"}
-                </DropdownMenuTrigger>
-                <DropdownMenuContent side="top" align="start">
-                  {agents.map((item) => {
-                    const value = `${item.ID}@${item.Version}`;
-                    return (
-                      <DropdownMenuItem key={value} onClick={() => setAgent(value)}>
-                        {value}
-                      </DropdownMenuItem>
-                    );
-                  })}
-                </DropdownMenuContent>
-              </DropdownMenu>
-              <Separator orientation="vertical" className="data-[orientation=vertical]:h-4" />
-              <InputGroupText>
-                <Clock />
-                Time
-              </InputGroupText>
-              <InputGroupInput
-                id="timeout"
-                aria-label="Time limit in seconds"
-                type="number"
-                min={5}
-                max={5400}
-                step={1}
-                required
-                value={timeout}
-                onChange={(event) => setTimeoutValue(event.target.value)}
-                disabled={busy}
-                className="h-7 w-14 flex-none px-1"
-              />
-              <InputGroupText>s</InputGroupText>
-              {agent.startsWith("demo@") && (
-                <>
-                  <Separator orientation="vertical" className="data-[orientation=vertical]:h-4" />
-                  <InputGroupText>Demo</InputGroupText>
-                  <InputGroupInput
-                    id="delay"
-                    aria-label="Demo duration in seconds"
-                    type="number"
-                    min={0}
-                    max={300}
-                    step={1}
-                    required
-                    value={delay}
-                    onChange={(event) => setDelay(event.target.value)}
-                    disabled={busy}
-                    className="h-7 w-14 flex-none px-1"
-                  />
-                  <InputGroupText>s</InputGroupText>
-                </>
-              )}
-              {!token && !readOnly && (
-                <InputGroupButton type="button" variant="ghost" onClick={onAccess}>
-                  <KeyRound />
-                  Access workspace
-                </InputGroupButton>
-              )}
-              <InputGroupButton
-                type="submit"
-                variant="default"
-                size="icon-xs"
-                className="ml-auto rounded-full"
-                disabled={busy || !token || !agent || !draft.trim()}
+            <span className={cn(compute === "local" ? "text-foreground" : "text-muted-foreground")}>
+              Local
+            </span>
+          </div>
+        </div>
+        {compute === "local" && (
+          <p className="text-sm text-muted-foreground">
+            Local compute is not available. Tasks run in the cloud.
+          </p>
+        )}
+        <form onSubmit={submit} className="flex flex-col gap-3">
+          <PromptComposer
+            id="prompt"
+            multiline
+            autoFocus
+            value={draft}
+            onValueChange={onDraftChange}
+            placeholder="Describe the goal and the PR or artifact you want."
+            agent={agent}
+            agents={agents}
+            onAgentChange={setAgent}
+            busy={busy}
+            sendDisabled={readOnly || !agent || compute === "local"}
+          />
+          {agent.startsWith("demo@") && (
+            <div className="flex flex-col gap-2">
+              <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                <label htmlFor="delay">Demo duration</label>
+                <Input
+                  id="delay"
+                  type="number"
+                  min={0}
+                  max={300}
+                  step={1}
+                  required
+                  value={delay}
+                  onChange={(event) => setDelay(event.target.value)}
+                  disabled={busy}
+                  className="w-20"
+                />
+                <span>seconds</span>
+              </div>
+              <p className="text-xs text-muted-foreground">
+                Demo checks the run and delivery flow. It does not call a model.
+              </p>
+            </div>
+          )}
+          <div className="flex flex-wrap gap-2">
+            {promptSuggestions.map((item) => (
+              <Button
+                key={item.label}
+                type="button"
+                variant="outline"
+                size="sm"
+                className="rounded-full"
+                onClick={() => onDraftChange(item.prompt)}
               >
-                {busy ? <LoaderCircle className="animate-spin" /> : <ArrowUp />}
-                <span className="sr-only">Send</span>
-              </InputGroupButton>
-            </InputGroupAddon>
-          </InputGroup>
+                {item.label}
+              </Button>
+            ))}
+          </div>
         </form>
         {readOnly && (
-          <p className="mt-3 text-sm text-muted-foreground">
+          <p className="text-sm text-muted-foreground">
             This workspace is read-only. Choose another workspace to create tasks.
           </p>
         )}
         {(error || connectError) && (
-          <p className="mt-3 text-sm text-destructive" role="alert">
+          <p className="text-sm text-destructive" role="alert">
             {error || connectError}
           </p>
         )}
-        {agent.startsWith("demo@") && (
-          <p className="mt-3 text-xs text-muted-foreground">
-            Demo checks the run and delivery flow. It does not call a model.
-          </p>
-        )}
         {token && !agents.length && (
-          <p className="mt-3 text-sm text-destructive" role="alert">
+          <p className="text-sm text-destructive" role="alert">
             This server has no agents registered.
           </p>
         )}

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type FormEvent } from "react";
 import {
   AlertCircle,
   ArrowDown,
@@ -22,8 +22,10 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@makez/ui/components/t
 import {
   api,
   canWrite,
+  createTask,
   eventText,
   terminal,
+  type Agent,
   type Artifact,
   type RunEvent,
   type Task,
@@ -31,11 +33,13 @@ import {
 import {
   formatBytes,
   formatClock,
+  formatLimit,
   formatTimestamp,
   formatWorked,
   message,
   stateLabel,
 } from "@/lib/format";
+import { PromptComposer } from "@/components/prompt-composer";
 import { StatusPill } from "@/components/status-pill";
 
 const tabTriggerClass =
@@ -48,7 +52,10 @@ export function TaskDetail({
   artifacts,
   error,
   streamState,
+  agents,
+  workspaceSlug,
   onTask,
+  onCreated,
 }: {
   token: string;
   task?: Task;
@@ -56,7 +63,10 @@ export function TaskDetail({
   artifacts: Artifact[];
   error: string;
   streamState: string;
+  agents: Agent[];
+  workspaceSlug: string;
   onTask: (task: Task) => void;
+  onCreated: (task: Task) => void;
 }) {
   const [canceling, setCanceling] = useState(false);
   const [actionError, setActionError] = useState("");
@@ -116,66 +126,75 @@ export function TaskDetail({
 
   return (
     <div className="grid min-h-0 flex-1 grid-cols-1 overflow-auto lg:grid-cols-[minmax(0,1fr)_300px] lg:grid-rows-[minmax(0,1fr)] lg:overflow-hidden">
-      <section className="min-w-0 px-6 py-5 lg:min-h-0 lg:overflow-auto" aria-label="Run">
-        <h1 className="text-lg font-medium wrap-anywhere">{task?.prompt ?? "Loading task…"}</h1>
-        {task && (
-          <div className="mt-3 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-            <span className="rounded border border-border-strong px-1.5 py-0.5">
-              {task.agent_id}@{task.agent_version}
-            </span>
-            <StatusPill state={task.state} />
-            <span>
-              {terminal(task.state)
-                ? formatTimestamp(task.created_at)
-                : `Worked for ${formatWorked(task.created_at, now)}`}
-            </span>
-          </div>
-        )}
-        {banner && (
-          <p
-            className="mt-4 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive"
-            role="alert"
-          >
-            {banner}
-          </p>
-        )}
-        {events.length ? (
-          <ol className="mt-6 space-y-3">
-            {events.map((event) => (
-              <Step key={event.seq} event={event} />
-            ))}
-          </ol>
-        ) : (
-          <p className="mt-6 text-sm text-muted-foreground">
-            {task && terminal(task.state)
-              ? "This task has no events."
-              : "Waiting for the first update."}
-          </p>
-        )}
-        <section className="mt-6 rounded-lg border border-border bg-card p-4">
-          <h2 className="text-sm font-medium">Summary</h2>
-          {lines.length ? (
-            <ul className="mt-2 list-disc space-y-1 pl-4 text-sm text-muted-foreground">
-              {lines.map((line) => (
-                <li key={line} className="wrap-anywhere">
-                  {line}
-                </li>
-              ))}
-            </ul>
-          ) : (
-            <p className="mt-2 text-sm text-muted-foreground">No summary yet.</p>
+      <section className="flex min-w-0 flex-col lg:min-h-0 lg:overflow-hidden" aria-label="Run">
+        <div className="min-w-0 px-6 py-5 max-md:pt-12 lg:min-h-0 lg:flex-1 lg:overflow-auto">
+          <h1 className="text-lg font-medium wrap-anywhere">{task?.prompt ?? "Loading task…"}</h1>
+          {task && (
+            <div className="mt-3 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+              <span className="rounded border border-border-strong px-1.5 py-0.5">
+                {task.agent_id}@{task.agent_version}
+              </span>
+              <StatusPill state={task.state} />
+              <span>
+                {terminal(task.state)
+                  ? formatTimestamp(task.created_at)
+                  : `Worked for ${formatWorked(task.created_at, now)}`}
+              </span>
+            </div>
           )}
-        </section>
-        <Collapsible open={rawOpen} onOpenChange={setRawOpen} className="mt-3">
-          <CollapsibleTrigger className="group flex w-full items-center gap-2 rounded-lg border border-border px-3 py-2 text-left text-sm">
-            <ChevronRight className="size-4 text-muted-foreground transition-transform group-data-panel-open:rotate-90" />
-            Raw log
-            <span className="ml-auto text-xs text-muted-foreground">{events.length}</span>
-          </CollapsibleTrigger>
-          <CollapsibleContent className="mt-2 max-h-80 overflow-auto rounded-lg border border-border px-3 py-2">
-            <LogLines events={events} />
-          </CollapsibleContent>
-        </Collapsible>
+          {banner && (
+            <p
+              className="mt-4 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive"
+              role="alert"
+            >
+              {banner}
+            </p>
+          )}
+          {events.length ? (
+            <ol className="mt-6 space-y-3">
+              {events.map((event) => (
+                <Step key={event.seq} event={event} />
+              ))}
+            </ol>
+          ) : (
+            <p className="mt-6 text-sm text-muted-foreground">
+              {task && terminal(task.state)
+                ? "This task has no events."
+                : "Waiting for the first update."}
+            </p>
+          )}
+          <section className="mt-6 rounded-lg border border-border bg-card p-4">
+            <h2 className="text-sm font-medium">Summary</h2>
+            {lines.length ? (
+              <ul className="mt-2 list-disc space-y-1 pl-4 text-sm text-muted-foreground">
+                {lines.map((line) => (
+                  <li key={line} className="wrap-anywhere">
+                    {line}
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <p className="mt-2 text-sm text-muted-foreground">No summary yet.</p>
+            )}
+          </section>
+          <Collapsible open={rawOpen} onOpenChange={setRawOpen} className="mt-3">
+            <CollapsibleTrigger className="group flex w-full items-center gap-2 rounded-lg border border-border px-3 py-2 text-left text-sm">
+              <ChevronRight className="size-4 text-muted-foreground transition-transform group-data-panel-open:rotate-90" />
+              Raw log
+              <span className="ml-auto text-xs text-muted-foreground">{events.length}</span>
+            </CollapsibleTrigger>
+            <CollapsibleContent className="mt-2 max-h-80 overflow-auto rounded-lg border border-border px-3 py-2">
+              <LogLines events={events} />
+            </CollapsibleContent>
+          </Collapsible>
+        </div>
+        <FollowUp
+          token={token}
+          task={task}
+          agents={agents}
+          workspaceSlug={workspaceSlug}
+          onCreated={onCreated}
+        />
       </section>
       <aside
         className="flex flex-col border-t border-border bg-surface lg:min-h-0 lg:overflow-hidden lg:border-t-0 lg:border-l"
@@ -244,6 +263,7 @@ export function TaskDetail({
                 <Detail label="Task ID" value={task.id} mono />
                 <Detail label="Agent" value={`${task.agent_id}@${task.agent_version}`} mono />
                 <Detail label="Created" value={formatTimestamp(task.created_at)} />
+                <Detail label="Time limit" value={formatLimit(task.created_at, task.deadline)} />
                 <Detail label="Deadline" value={formatTimestamp(task.deadline)} />
                 <Detail label="Stage" value={stateLabel(task.run?.state)} />
                 <Detail label="Cleanup" value={stateLabel(task.run?.cleanup_state)} />
@@ -273,6 +293,118 @@ export function TaskDetail({
         </div>
       </aside>
     </div>
+  );
+}
+
+const contextCap = 65536;
+
+function FollowUp({
+  token,
+  task,
+  agents,
+  workspaceSlug,
+  onCreated,
+}: {
+  token: string;
+  task?: Task;
+  agents: Agent[];
+  workspaceSlug: string;
+  onCreated: (task: Task) => void;
+}) {
+  const current = task ? `${task.agent_id}@${task.agent_version}` : "";
+  const options =
+    current && !agents.some((item) => `${item.ID}@${item.Version}` === current)
+      ? [{ ID: task?.agent_id ?? "", Version: task?.agent_version ?? "" }, ...agents]
+      : agents;
+  const [agent, setAgent] = useState(current);
+  const [draft, setDraft] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const attempt = useRef<{ body: string; key: string } | null>(null);
+  const optionKey = options.map((item) => `${item.ID}@${item.Version}`).join("\n");
+  const used = new TextEncoder().encode(`${task?.prompt ?? ""}\n${draft}`).byteLength;
+  const pct = Math.min(100, Math.round((used / contextCap) * 100));
+
+  useEffect(() => {
+    const known = optionKey.split("\n").includes(agent);
+    if (agent && known) return;
+    if (current) setAgent(current);
+  }, [agent, current, optionKey]);
+
+  async function submit(event: FormEvent) {
+    event.preventDefault();
+    if (busy || !canWrite()) return;
+    if (!token || !agent || !draft.trim()) return;
+    if (new TextEncoder().encode(draft).byteLength > contextCap) {
+      setError("The request cannot exceed 65536 bytes");
+      return;
+    }
+    setBusy(true);
+    setError("");
+    try {
+      const created = await createTask(
+        token,
+        {
+          prompt: draft,
+          agent,
+          delaySeconds: agent.startsWith("demo@") ? 10 : undefined,
+        },
+        attempt,
+      );
+      attempt.current = null;
+      setDraft("");
+      onCreated(created);
+    } catch (err) {
+      setError(message(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <form
+      onSubmit={submit}
+      className="flex shrink-0 flex-col gap-2 border-t border-border px-4 py-3"
+    >
+      <PromptComposer
+        id="follow-up"
+        value={draft}
+        onValueChange={setDraft}
+        placeholder="Add a follow up"
+        agent={agent}
+        agents={options}
+        onAgentChange={setAgent}
+        busy={busy}
+        sendDisabled={!canWrite() || !agent}
+      />
+      <div className="flex items-center gap-3">
+        {workspaceSlug && (
+          <span className="max-w-[45%] truncate rounded-full bg-muted px-2 py-0.5 text-xs text-muted-foreground">
+            {workspaceSlug}
+          </span>
+        )}
+        <div
+          className="h-1 min-w-16 flex-1 overflow-hidden rounded-full bg-muted"
+          role="meter"
+          aria-label="Context usage"
+          aria-valuemin={0}
+          aria-valuemax={contextCap}
+          aria-valuenow={Math.min(used, contextCap)}
+          title={`${used} / ${contextCap} bytes`}
+        >
+          <div
+            className="h-full bg-foreground/70"
+            style={{ width: `${used > 0 ? Math.max(pct, 2) : 0}%` }}
+          />
+        </div>
+        {pct > 0 && <span className="shrink-0 text-[11px] text-text-faint">{pct}%</span>}
+      </div>
+      {error && (
+        <p className="text-sm text-destructive" role="alert">
+          {error}
+        </p>
+      )}
+    </form>
   );
 }
 
