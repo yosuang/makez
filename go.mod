@@ -6,7 +6,7 @@ require (
 	github.com/casbin/casbin/v2 v2.135.0
 	github.com/coreos/go-oidc/v3 v3.14.1
 	github.com/go-jose/go-jose/v4 v4.1.7
-	github.com/jackc/pgx/v5 v5.11.0
+	github.com/jackc/pgx/v5 v5.12.0
 	github.com/labstack/echo/v5 v5.4.2
 	github.com/pressly/goose/v3 v3.29.0
 	github.com/swaggo/files/v2 v2.0.2
