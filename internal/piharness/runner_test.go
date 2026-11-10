@@ -77,6 +77,49 @@ func TestRunnerWaitsToSendUntilRelease(t *testing.T) {
 	}
 }
 
+func TestRunnerStopAfterFlushRemovesTheUnsentFile(t *testing.T) {
+	dir := t.TempDir()
+	script := filepath.Join(dir, "run.py")
+	if err := os.WriteFile(script, []byte(runnerSource), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	disposition := filepath.Join(dir, "disposition.json")
+	result := filepath.Join(dir, "result.json")
+	check := exec.Command("python3", "-c", `
+import importlib.util, os, sys
+spec = importlib.util.spec_from_file_location("pi_run", sys.argv[1])
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+path, result = sys.argv[2], sys.argv[3]
+class Proc:
+    def poll(self):
+        return None
+session = mod.Session(Proc())
+calls = []
+def command(body, seconds, interruptible=True):
+    calls.append(body.get("type"))
+    return {"success": True}
+session.command = command
+original = mod.write_disposition
+def wrapped(target, disposition, prompt_hash):
+    original(target, disposition, prompt_hash)
+    session.stop.set()
+mod.write_disposition = wrapped
+code = mod.send_prompt(session, {
+    "release_path": "",
+    "disposition_path": path,
+    "result_path": result,
+    "prompt": "hello",
+    "settle_seconds": 5,
+}, "abc")
+if code != 0 or calls or os.path.exists(path):
+    sys.exit(1)
+`, script, disposition, result)
+	if err := check.Run(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestRunnerRecordsSendingBeforeThePrompt(t *testing.T) {
 	dir := t.TempDir()
 	binary := fakePi(t, dir, fakeOptions{version: PackageVersion, settle: true})

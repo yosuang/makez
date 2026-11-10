@@ -254,16 +254,23 @@ func (a *Activities) launchPi(ctx context.Context, in Input) error {
 	if err != nil {
 		return err
 	}
+	if opened.Recovery.Release {
+		// The process is live and the prompt bytes have not been written. Finish that one handoff.
+		if err = a.writePiRelease(ctx, t); err != nil {
+			return err
+		}
+		return a.persistRunningPi(ctx, t)
+	}
+	opened, err = a.relaunchUnsentAttempt(ctx, t, opened)
+	if err != nil {
+		return err
+	}
 	step := opened.Attempt.Step
-	// Commit the command row before the process exists. started stays false, so a
-	// crash here still sends the prompt. Keep the mode chosen above.
+	// Commit the command row before the process exists. started stays false until a process exists.
 	if err = a.markPromptSending(ctx, t, opened); err != nil {
 		return err
 	}
-	if t.Run.Process != nil && t.Run.Process.Key.Step == step && t.Run.Exit == nil {
-		if err = a.finishPromptDelivery(ctx, t); err != nil {
-			return err
-		}
+	if !opened.Recovery.Send && t.Run.Process != nil && t.Run.Process.Key.Step == step && t.Run.Exit == nil {
 		return a.persistRunningPi(ctx, t)
 	}
 	phase, err := a.DB.OperationPhase(ctx, t.Run.ID, step)

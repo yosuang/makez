@@ -13,6 +13,9 @@ SELECT t.*,COALESCE((SELECT last_error FROM makez_outbox WHERE task_id=t.id AND 
 -- name: GetRunByTask :one
 SELECT * FROM makez_runs WHERE task_id=$1;
 
+-- name: GetRunByID :one
+SELECT * FROM makez_runs WHERE workspace_id=$1 AND id=$2;
+
 -- name: LockRun :one
 SELECT * FROM makez_runs WHERE id=$1 FOR UPDATE;
 

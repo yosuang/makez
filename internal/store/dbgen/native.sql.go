@@ -368,6 +368,40 @@ func (q *Queries) ReleaseSessionWriter(ctx context.Context, arg ReleaseSessionWr
 	return err
 }
 
+const reopenUnsentPrompt = `-- name: ReopenUnsentPrompt :execrows
+UPDATE makez_native_commands
+SET started = false,
+    run_id = $1,
+    generation = $2,
+    updated_at = now()
+WHERE session_id = $3
+  AND prompt_sha256 = $4
+  AND workspace_id = $5
+  AND disposition = 'sending'
+`
+
+type ReopenUnsentPromptParams struct {
+	RunID        string
+	Generation   int64
+	SessionID    string
+	PromptSha256 string
+	WorkspaceID  string
+}
+
+func (q *Queries) ReopenUnsentPrompt(ctx context.Context, arg ReopenUnsentPromptParams) (int64, error) {
+	result, err := q.db.Exec(ctx, reopenUnsentPrompt,
+		arg.RunID,
+		arg.Generation,
+		arg.SessionID,
+		arg.PromptSha256,
+		arg.WorkspaceID,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const saveAttemptOutcome = `-- name: SaveAttemptOutcome :execrows
 UPDATE makez_attempts
 SET disposition = $1,

@@ -286,6 +286,34 @@ func (s *Store) MarkPromptStarted(ctx context.Context, workspace, runID, session
 	return tx.Commit(ctx)
 }
 
+// ReopenUnsentPrompt moves a sending row to this run and clears started.
+// The caller must already have proved the prompt bytes were not written.
+// The writer lease is the fence: a run that lost it cannot reopen the row.
+func (s *Store) ReopenUnsentPrompt(ctx context.Context, workspace, runID, sessionID string, generation int64, promptHash string) error {
+	if sessionID == "" || runID == "" || !sha256Hex.MatchString(promptHash) || generation < 1 {
+		return ErrInvalidInput
+	}
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck // Commit closes the transaction; pgx discards the connection on rollback failure.
+	q := dbgen.New(tx)
+	if err = requireWriter(ctx, q, workspace, sessionID, runID); err != nil {
+		return err
+	}
+	rows, err := q.ReopenUnsentPrompt(ctx, dbgen.ReopenUnsentPromptParams{
+		RunID: runID, Generation: generation, SessionID: sessionID, PromptSha256: promptHash, WorkspaceID: workspace,
+	})
+	if err != nil {
+		return err
+	}
+	if rows != 1 {
+		return ErrConflict
+	}
+	return tx.Commit(ctx)
+}
+
 // HasUnknownPrompt reports whether a different prompt is still sending or accepted.
 func (s *Store) HasUnknownPrompt(ctx context.Context, workspace, sessionID, promptHash string) (bool, error) {
 	if sessionID == "" || !sha256Hex.MatchString(promptHash) {

@@ -1,6 +1,7 @@
 package workflow
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
@@ -23,6 +24,7 @@ import (
 
 // errStoppedBeforeStart is a definite failure before Provider.Start. The process does not exist.
 var errStoppedBeforeStart = errors.New("stopped before the process started")
+var errReleaseBlocked = errors.New("stopped before the release file")
 
 // TestSendingRowPrecedesTheRunnerFlush is the crash after the process exists.
 // The disposition file is missing, so an accept is unknown. The other task does not send.
@@ -379,6 +381,11 @@ type sendingGate struct {
 	missingDisposition bool
 	modes              []string
 	blockWrites        int
+	releaseBlocks      int
+	remember           bool
+	unreadable         string
+	files              map[string][]byte
+	releases           []string
 }
 
 func (g *sendingGate) BackendID() string { return "test" }
@@ -407,7 +414,7 @@ func (g *sendingGate) Start(ctx context.Context, sandbox core.SandboxRef, reques
 		g.t.Fatalf("process started while the command row was %q", got)
 	}
 	g.started = true
-	return core.ProcessRef{Sandbox: sandbox, ID: "proc-1", Key: request.Key}, nil
+	return core.ProcessRef{Sandbox: sandbox, ID: "proc-" + request.Key.Step, Key: request.Key}, nil
 }
 func (g *sendingGate) Process(context.Context, core.SandboxRef, core.OperationKey) (core.ProcessObservation, error) {
 	return core.ProcessObservation{}, nil
@@ -418,13 +425,26 @@ func (g *sendingGate) Output(context.Context, core.ProcessRef, string, int) (cor
 func (g *sendingGate) Stop(context.Context, core.SandboxRef, core.OperationKey, core.StopPolicy) error {
 	return nil
 }
-func (g *sendingGate) ReadFile(_ context.Context, _ core.SandboxRef, path string) (io.ReadCloser, error) {
+func (g *sendingGate) ReadFile(_ context.Context, sandbox core.SandboxRef, path string) (io.ReadCloser, error) {
+	if g.unreadable != "" && sandbox.ID == g.unreadable {
+		return nil, errors.New("sandbox unreadable")
+	}
+	if g.remember {
+		data, ok := g.files[sandbox.ID+"\x00"+path]
+		if !ok {
+			if path == piharness.DispositionPath {
+				g.missingDisposition = true
+			}
+			return nil, fs.ErrNotExist
+		}
+		return io.NopCloser(bytes.NewReader(data)), nil
+	}
 	if path == piharness.DispositionPath {
 		g.missingDisposition = true
 	}
 	return nil, fs.ErrNotExist
 }
-func (g *sendingGate) WriteFile(_ context.Context, _ core.SandboxRef, path string, contents io.Reader, _ int64) error {
+func (g *sendingGate) WriteFile(_ context.Context, sandbox core.SandboxRef, path string, contents io.Reader, _ int64) error {
 	data, err := io.ReadAll(contents)
 	if err != nil {
 		return err
@@ -432,6 +452,19 @@ func (g *sendingGate) WriteFile(_ context.Context, _ core.SandboxRef, path strin
 	if path == piharness.InstructionPath && g.blockWrites > 0 {
 		g.blockWrites--
 		return errStoppedBeforeStart
+	}
+	if path == piharness.ReleasePath && g.releaseBlocks > 0 {
+		g.releaseBlocks--
+		return errReleaseBlocked
+	}
+	if g.remember {
+		if g.files == nil {
+			g.files = map[string][]byte{}
+		}
+		g.files[sandbox.ID+"\x00"+path] = append([]byte(nil), data...)
+		if path == piharness.ReleasePath {
+			g.releases = append(g.releases, sandbox.ID)
+		}
 	}
 	if path != piharness.InstructionPath {
 		return nil

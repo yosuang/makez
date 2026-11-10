@@ -78,11 +78,101 @@ type Action struct {
 	SendPrompt  bool
 }
 
-// Deliver decides one prompt. A sending row whose process has not started is sent
-// once: Pi has not received it. After the process has started, Decide applies and
-// an unknown accept is not sent again.
+// Evidence is what this process can prove about one prompt.
+// Started and a live process are not Pi acceptance. Official Pi RPC has no idempotency key.
+type Evidence struct {
+	Command         Disposition
+	Started         bool
+	Owner           bool
+	RunActive       bool
+	ProcessLive     bool
+	ProcessKnown    bool
+	FileKnown       bool
+	ReleaseWritten  bool
+	FileDisposition Disposition
+}
+
+// Recovery is the next local action. It does not mark a task successful.
+type Recovery struct {
+	Class   string
+	Send    bool
+	Release bool
+}
+
+// Delivery classes. They are local proof, not a Pi checkpoint result.
+const (
+	ClassNotSent   = "not_sent"
+	ClassHandedOff = "handed_off"
+	ClassAccepted  = "accepted"
+	ClassUnknown   = "unknown"
+)
+
+// Recover chooses one action from local evidence.
+// Send is allowed only when this process can prove the prompt bytes were not written.
+// Release completes that one write on a live process. A possible handoff is not replayed.
+func Recover(ev Evidence) Recovery {
+	switch ev.Command {
+	case "", DispositionNone, DispositionRejected:
+		return Recovery{Class: ClassNotSent, Send: true}
+	case DispositionAccepted:
+		return Recovery{Class: ClassAccepted}
+	case DispositionSettled:
+		// A settled row is a finished local observation. A later send is a new turn.
+		return Recovery{Class: ClassAccepted, Send: true}
+	case DispositionReconciled:
+		return Recovery{Class: ClassAccepted}
+	case DispositionSending:
+		if !ev.Started {
+			return Recovery{Class: ClassNotSent, Send: true}
+		}
+		if !ev.FileKnown {
+			return Recovery{Class: ClassUnknown}
+		}
+		switch ev.FileDisposition {
+		case DispositionAccepted, DispositionSettled:
+			return Recovery{Class: ClassAccepted}
+		case DispositionSending:
+			// The runner fsyncs this before the prompt pipe write, so the bytes may already have followed.
+			return Recovery{Class: ClassHandedOff}
+		case DispositionRejected:
+			return Recovery{Class: ClassNotSent, Send: true}
+		default:
+			return recoverBeforePipe(ev)
+		}
+	default:
+		return Recovery{Class: ClassUnknown}
+	}
+}
+
+// recoverBeforePipe runs when the pre-prompt disposition file is absent.
+// The runner writes that file before any prompt byte, and only after the release file.
+func recoverBeforePipe(ev Evidence) Recovery {
+	if !ev.ProcessKnown {
+		if ev.ReleaseWritten || ev.RunActive {
+			return Recovery{Class: ClassHandedOff}
+		}
+		return Recovery{Class: ClassNotSent, Send: true}
+	}
+	if ev.ProcessLive && ev.ReleaseWritten {
+		return Recovery{Class: ClassHandedOff}
+	}
+	if ev.ProcessLive && !ev.ReleaseWritten && ev.RunActive && ev.Owner {
+		return Recovery{Class: ClassNotSent, Release: true}
+	}
+	if ev.ProcessLive && !ev.ReleaseWritten && ev.RunActive {
+		return Recovery{Class: ClassNotSent}
+	}
+	return Recovery{Class: ClassNotSent, Send: true}
+}
+
+// Deliver decides one prompt when the sandbox files were not read.
+// A started row without those files is treated as a possible handoff, not as acceptance.
 func Deliver(prev Disposition, sameCommand bool, history History, processStarted bool) Action {
-	if sameCommand && prev == DispositionSending && !processStarted {
+	ev := Evidence{
+		Command: prev, Started: processStarted, Owner: sameCommand, RunActive: true,
+		ProcessLive: processStarted, ProcessKnown: true, FileKnown: true, ReleaseWritten: processStarted,
+	}
+	if Recover(ev).Send {
 		return Action{SendPrompt: true}
 	}
 	return Decide(prev, sameCommand, history)

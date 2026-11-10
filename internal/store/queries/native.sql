@@ -122,3 +122,14 @@ UPDATE makez_native_commands
 SET started = true, updated_at = now()
 WHERE session_id = $1 AND prompt_sha256 = $2 AND workspace_id = $3
   AND run_id = $4 AND generation = $5 AND disposition = 'sending';
+
+-- name: ReopenUnsentPrompt :execrows
+UPDATE makez_native_commands
+SET started = false,
+    run_id = sqlc.arg(run_id),
+    generation = sqlc.arg(generation),
+    updated_at = now()
+WHERE session_id = sqlc.arg(session_id)
+  AND prompt_sha256 = sqlc.arg(prompt_sha256)
+  AND workspace_id = sqlc.arg(workspace_id)
+  AND disposition = 'sending';

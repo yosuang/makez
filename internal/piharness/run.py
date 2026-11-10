@@ -123,6 +123,23 @@ def write_disposition(path, disposition, prompt_hash):
     fsync_file(path, body)
 
 
+def discard_unsent_flush(path):
+    """Remove a sending file this process wrote and then did not follow with a prompt write.
+
+    A crash before this remove leaves the file. A later reader cannot tell that crash from a
+    crash after the prompt write began, so that file stays a possible handoff.
+    """
+    try:
+        os.remove(path)
+    except FileNotFoundError:
+        return
+    directory = os.open(os.path.dirname(path) or "/", os.O_RDONLY)
+    try:
+        os.fsync(directory)
+    finally:
+        os.close(directory)
+
+
 def prompt_hash(prompt):
     import hashlib
 
@@ -315,8 +332,10 @@ def send_prompt(session, inst, digest):
     # Durable "sending" is written and flushed before any prompt byte reaches Pi.
     write_disposition(inst["disposition_path"], "sending", digest)
     if session.stop.is_set():
-        # Leave "sending" in place. The prompt bytes were not written, and a
-        # later "none" would erase an unknown earlier accept.
+        # This process has not called the prompt command. Remove the flush so a later
+        # reader can prove the bytes were not written. Do not write "none": that would
+        # also hide an accept recorded by an earlier process.
+        discard_unsent_flush(inst["disposition_path"])
         write_result(inst["result_path"], False, "Canceled before the prompt was sent.")
         return 0
     response = session.command({"type": "prompt", "message": inst["prompt"]}, min(30, inst["settle_seconds"]))

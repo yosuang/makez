@@ -23,10 +23,12 @@ type piLauncher interface {
 }
 
 type openedAttempt struct {
-	Session store.NativeSession
-	Attempt store.Attempt
-	Mode    string
-	Prompt  store.NativePrompt
+	Session  store.NativeSession
+	Attempt  store.Attempt
+	Mode     string
+	Prompt   store.NativePrompt
+	Evidence piharness.Evidence
+	Recovery piharness.Recovery
 }
 
 func (a *Activities) preparePi(ctx context.Context, t store.Task) error {
@@ -93,23 +95,176 @@ func (a *Activities) openPiAttempt(ctx context.Context, t store.Task) (openedAtt
 	if err != nil {
 		return openedAttempt{}, err
 	}
-	action := piharness.Deliver(piharness.Disposition(own.Disposition), own.Found, piharness.HistoryUnread, own.Started)
+	evidence, err := a.deliveryEvidence(ctx, t, own)
+	if err != nil {
+		return openedAttempt{}, err
+	}
+	recovery := piharness.Recover(evidence)
+	action := piharness.Action{}
+	if recovery.Send {
+		action.SendPrompt = true
+	} else if !recovery.Release {
+		action = piharness.Decide(piharness.Disposition(own.Disposition), own.Found, piharness.HistoryUnread)
+	}
 	mode := piharness.Mode(action)
 	if unknown && action.SendPrompt {
 		// Another prompt is still in a process. Read before sending this one, and do not clear that row.
 		mode = "reconcile_then_send"
 	}
-	return openedAttempt{Session: session, Attempt: attempt, Mode: mode, Prompt: own}, nil
+	return openedAttempt{Session: session, Attempt: attempt, Mode: mode, Prompt: own, Evidence: evidence, Recovery: recovery}, nil
+}
+
+// deliveryEvidence reads the owning run's sandbox. A missing release file and a missing
+// pre-prompt disposition are local proof. They are not a Pi acceptance.
+func (a *Activities) deliveryEvidence(ctx context.Context, t store.Task, prompt store.NativePrompt) (piharness.Evidence, error) {
+	isOwner := t.Run != nil && prompt.Found && prompt.RunID == t.Run.ID
+	ev := piharness.Evidence{Command: piharness.Disposition(prompt.Disposition), Started: prompt.Started, Owner: isOwner, FileKnown: true, ProcessKnown: true}
+	if !prompt.Found || prompt.Disposition != string(piharness.DispositionSending) || !prompt.Started {
+		return ev, nil
+	}
+	owner, err := a.DB.RunByID(ctx, t.WorkspaceID, prompt.RunID)
+	if err != nil {
+		ev.FileKnown, ev.ProcessKnown = false, false
+		return ev, nil
+	}
+	ev.RunActive = runActive(owner.State)
+	ev.ProcessLive, ev.ProcessKnown = a.processLiveness(ctx, owner)
+	if owner.Sandbox == nil {
+		ev.FileKnown = false
+		return ev, nil
+	}
+	_, known, exists, err := a.sandboxFile(ctx, *owner.Sandbox, piharness.ReleasePath)
+	if err != nil {
+		return ev, err
+	}
+	if !known {
+		ev.FileKnown = false
+		return ev, nil
+	}
+	// The runner proceeds when the file exists, including an empty one. Content is not the proof.
+	ev.ReleaseWritten = exists
+	body, known, exists, err := a.sandboxFile(ctx, *owner.Sandbox, piharness.DispositionPath)
+	if err != nil {
+		return ev, err
+	}
+	if !known {
+		ev.FileKnown = false
+		return ev, nil
+	}
+	if !exists {
+		return ev, nil
+	}
+	parsed, ok := parseDisposition(body)
+	if !ok {
+		ev.FileKnown = false
+		return ev, nil
+	}
+	ev.FileDisposition = parsed
+	return ev, nil
+}
+
+func runActive(state core.RunState) bool {
+	switch state {
+	case core.RunSucceeded, core.RunFailed, core.RunCanceled:
+		return false
+	default:
+		return true
+	}
+}
+
+func (a *Activities) processLiveness(ctx context.Context, run *store.Run) (live, known bool) {
+	if run == nil || run.Process == nil || run.Sandbox == nil {
+		return false, true
+	}
+	if run.Exit != nil {
+		return false, true
+	}
+	obs, err := a.Provider.Process(ctx, *run.Sandbox, run.Process.Key)
+	if err != nil {
+		return false, false
+	}
+	switch obs.State {
+	case core.ProcessExited, core.ProcessNotStarted:
+		return false, true
+	case core.ProcessRunning:
+		return true, true
+	case core.ProcessUnknown:
+		return false, false
+	default:
+		// No affirmative receipt. A stored process with no exit is still treated as live.
+		return true, true
+	}
+}
+
+func (a *Activities) sandboxFile(ctx context.Context, sandbox core.SandboxRef, path string) (data []byte, known, exists bool, err error) {
+	file, err := a.Provider.ReadFile(ctx, sandbox, path)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, true, false, nil
+	}
+	if err != nil {
+		return nil, false, false, nil
+	}
+	defer file.Close() //nolint:errcheck // A short file has no buffered write.
+	data, err = io.ReadAll(io.LimitReader(file, 4097))
+	if err != nil || len(data) > 4096 {
+		return nil, false, false, nil
+	}
+	return data, true, true, nil
+}
+
+func parseDisposition(data []byte) (piharness.Disposition, bool) {
+	var body struct {
+		Disposition  string `json:"disposition"`
+		PromptSHA256 string `json:"prompt_sha256"`
+	}
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	if decoder.Decode(&body) != nil {
+		return "", false
+	}
+	switch piharness.Disposition(body.Disposition) {
+	case piharness.DispositionNone, piharness.DispositionSending, piharness.DispositionAccepted, piharness.DispositionSettled, piharness.DispositionRejected, piharness.DispositionReconciled:
+		return piharness.Disposition(body.Disposition), true
+	default:
+		return "", false
+	}
 }
 
 // markPromptSending commits the command row before Provider.Start when this attempt will send.
 // started stays false until the process exists. A crash before that still sends the prompt once.
 // The mode chosen above is kept: reading the new row would turn this first send into a read.
+// relaunchUnsentAttempt opens the next generation when this run's process died
+// before the pre-prompt disposition flush. A live process is not started again.
+func (a *Activities) relaunchUnsentAttempt(ctx context.Context, t store.Task, opened openedAttempt) (openedAttempt, error) {
+	if !opened.Recovery.Send || !opened.Prompt.Started || t.Run == nil || opened.Prompt.RunID != t.Run.ID {
+		return opened, nil
+	}
+	if t.Run.Process == nil || opened.Attempt.Step != t.Run.Process.Key.Step {
+		return opened, nil
+	}
+	if !opened.Evidence.ProcessKnown || opened.Evidence.ProcessLive {
+		return opened, nil
+	}
+	if opened.Attempt.Generation >= int64(piharness.MaxAttempts) {
+		return openedAttempt{}, fail("ATTEMPT_EXHAUSTED", nil)
+	}
+	err := a.DB.SaveAttemptProgress(ctx, t.WorkspaceID, t.Run.ID, opened.Session.ID, opened.Attempt.Generation, string(piharness.DispositionSending), piharness.PromptHash(t.Prompt), "lost")
+	if err != nil {
+		return openedAttempt{}, err
+	}
+	return a.openPiAttempt(ctx, t)
+}
+
 func (a *Activities) markPromptSending(ctx context.Context, t store.Task, opened openedAttempt) error {
 	if opened.Mode != "send" && opened.Mode != "reconcile_then_send" {
 		return nil
 	}
-	return a.DB.SaveAttemptProgress(ctx, t.WorkspaceID, t.Run.ID, opened.Session.ID, opened.Attempt.Generation, string(piharness.DispositionSending), piharness.PromptHash(t.Prompt), "")
+	hash := piharness.PromptHash(t.Prompt)
+	if opened.Prompt.Found && opened.Prompt.Started {
+		// The bytes were proved unsent. Move the row to this run and clear the local start.
+		return a.DB.ReopenUnsentPrompt(ctx, t.WorkspaceID, t.Run.ID, opened.Session.ID, opened.Attempt.Generation, hash)
+	}
+	return a.DB.SaveAttemptProgress(ctx, t.WorkspaceID, t.Run.ID, opened.Session.ID, opened.Attempt.Generation, string(piharness.DispositionSending), hash, "")
 }
 
 func (a *Activities) writePiInstruction(ctx context.Context, t store.Task, opened openedAttempt) error {
@@ -181,6 +336,10 @@ func (a *Activities) finishPromptDelivery(ctx context.Context, t store.Task) err
 }
 
 func (a *Activities) writePiRelease(ctx context.Context, t store.Task) error {
+	// A run that lost the fence must not release a process the next writer may also start.
+	if err := a.renewPiSession(ctx, t); err != nil {
+		return err
+	}
 	body := []byte("1\n")
 	if err := a.Provider.WriteFile(ctx, *t.Run.Sandbox, piharness.ReleasePath, bytes.NewReader(body), int64(len(body))); err != nil {
 		return convert(err)

@@ -37,6 +37,71 @@ func TestDecideDoesNotResendACommandThatMightHaveBeenAccepted(t *testing.T) {
 	}
 }
 
+func TestRecoverAcrossCommitFilePipeAndAck(t *testing.T) {
+	sending := Evidence{Command: DispositionSending, Started: true, FileKnown: true, ProcessKnown: true}
+	cases := []struct {
+		name string
+		ev   Evidence
+		want Recovery
+	}{
+		{"no row", Evidence{FileKnown: true, ProcessKnown: true}, Recovery{Class: ClassNotSent, Send: true}},
+		{"commit before process", Evidence{Command: DispositionSending, FileKnown: true, ProcessKnown: true}, Recovery{Class: ClassNotSent, Send: true}},
+		{"files unreadable", Evidence{Command: DispositionSending, Started: true, ProcessKnown: true, ProcessLive: true, RunActive: true}, Recovery{Class: ClassUnknown}},
+		{"process unknown, release absent, run inactive", Evidence{Command: DispositionSending, Started: true, FileKnown: true}, Recovery{Class: ClassNotSent, Send: true}},
+		{"process unknown, release present", Evidence{Command: DispositionSending, Started: true, FileKnown: true, ReleaseWritten: true}, Recovery{Class: ClassHandedOff}},
+		{"process unknown while the run is active", Evidence{Command: DispositionSending, Started: true, FileKnown: true, RunActive: true}, Recovery{Class: ClassHandedOff}},
+		{"owner resumes before release", func() Evidence {
+			ev := sending
+			ev.Owner, ev.RunActive, ev.ProcessLive = true, true, true
+			return ev
+		}(), Recovery{Class: ClassNotSent, Release: true}},
+		{"active run blocks the successor", func() Evidence {
+			ev := sending
+			ev.RunActive, ev.ProcessLive = true, true
+			return ev
+		}(), Recovery{Class: ClassNotSent}},
+		{"inactive run sends when release is absent", func() Evidence {
+			ev := sending
+			ev.ProcessLive = true
+			return ev
+		}(), Recovery{Class: ClassNotSent, Send: true}},
+		{"live process after release", func() Evidence {
+			ev := sending
+			ev.ProcessLive, ev.ReleaseWritten, ev.RunActive = true, true, false
+			return ev
+		}(), Recovery{Class: ClassHandedOff}},
+		{"dead process before the disposition flush", func() Evidence {
+			ev := sending
+			ev.ReleaseWritten = true
+			return ev
+		}(), Recovery{Class: ClassNotSent, Send: true}},
+		{"pipe after sending flush", func() Evidence {
+			ev := sending
+			ev.FileDisposition = DispositionSending
+			return ev
+		}(), Recovery{Class: ClassHandedOff}},
+		{"ack accepted", func() Evidence {
+			ev := sending
+			ev.FileDisposition = DispositionAccepted
+			return ev
+		}(), Recovery{Class: ClassAccepted}},
+		{"ack rejected", func() Evidence {
+			ev := sending
+			ev.FileDisposition = DispositionRejected
+			return ev
+		}(), Recovery{Class: ClassNotSent, Send: true}},
+		{"db accepted", Evidence{Command: DispositionAccepted, FileKnown: true}, Recovery{Class: ClassAccepted}},
+		{"db rejected", Evidence{Command: DispositionRejected, FileKnown: true}, Recovery{Class: ClassNotSent, Send: true}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := Recover(tc.ev); got != tc.want {
+				t.Fatalf("Recover=%+v, want %+v", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestDeliverSendsUntilTheProcessStarts(t *testing.T) {
 	if !Deliver(DispositionSending, true, HistoryUnread, false).SendPrompt {
 		t.Fatal("an unstarted prompt was not sent")

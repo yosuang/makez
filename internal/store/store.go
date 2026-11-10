@@ -127,6 +127,21 @@ func runFromRow(row dbgen.MakezRun, err error) (*Run, error) {
 func loadRun(ctx context.Context, q *dbgen.Queries, taskID string) (*Run, error) {
 	return runFromRow(q.GetRunByTask(ctx, taskID))
 }
+
+// RunByID returns one run in a workspace. A missing run is ErrNotFound.
+func (s *Store) RunByID(ctx context.Context, workspace, id string) (*Run, error) {
+	if workspace == "" || id == "" {
+		return nil, ErrInvalidInput
+	}
+	run, err := runFromRow(dbgen.New(s.pool).GetRunByID(ctx, dbgen.GetRunByIDParams{WorkspaceID: workspace, ID: id}))
+	if err != nil || run == nil {
+		if run == nil && err == nil {
+			return nil, ErrNotFound
+		}
+		return nil, err
+	}
+	return run, nil
+}
 func taskInTx(ctx context.Context, tx pgx.Tx, workspace, id string) (Task, error) {
 	q := dbgen.New(tx)
 	row, err := q.LockTask(ctx, dbgen.LockTaskParams{WorkspaceID: workspace, ID: id})
