@@ -5,6 +5,8 @@ import (
 	"context"
 	"log/slog"
 	"net/http"
+	"slices"
+	"strings"
 	"time"
 
 	"github.com/labstack/echo/v5"
@@ -84,9 +86,21 @@ func workspace(r *http.Request) string { return r.Context().Value(workspaceKey{}
 // @Failure 401 {object} ErrorResponse
 // @Router /agents [get]
 func (s *Server) agents(c *echo.Context) error {
-	var ids []core.AdapterIdentity
-	for _, a := range s.Agents {
-		ids = append(ids, a.Identity())
+	return c.JSON(200, adapterIdentities(s.Agents))
+}
+
+// adapterIdentities returns agents in a stable order. demo sorts before pi, so a
+// console that falls back to the first entry does not select Pi by map iteration.
+func adapterIdentities(agents map[string]core.AgentAdapter) []core.AdapterIdentity {
+	ids := make([]core.AdapterIdentity, 0, len(agents))
+	for _, item := range agents {
+		ids = append(ids, item.Identity())
 	}
-	return c.JSON(200, ids)
+	slices.SortFunc(ids, func(a, b core.AdapterIdentity) int {
+		if c := strings.Compare(a.ID, b.ID); c != 0 {
+			return c
+		}
+		return strings.Compare(a.Version, b.Version)
+	})
+	return ids
 }

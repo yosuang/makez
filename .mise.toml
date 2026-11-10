@@ -84,5 +84,29 @@ run = '''
 #!/usr/bin/env bash
 set -euo pipefail
 : "${MAKEZ_TEST_DATABASE_URL:?Set an isolated PostgreSQL test database URL}"
-go test ./...
+log=$(mktemp)
+trap 'rm -f "$log"' EXIT
+set +e
+go test ./... -count=1 -v >"$log" 2>&1
+status=$?
+set -e
+cat "$log"
+if [[ "$status" -ne 0 ]]; then
+  exit "$status"
+fi
+if grep -q 'MAKEZ_TEST_DATABASE_URL is not set' "$log"; then
+  echo "PostgreSQL tests skipped" >&2
+  exit 1
+fi
+for name in \
+  TestNativeSessionSingleWriter \
+  TestDeliveryBoundaryInjection \
+  TestSendingRowPrecedesTheRunnerFlush \
+  TestPromptIsSentOnceUntilTheProcessStarts
+do
+  if ! grep -q -- "--- PASS: ${name}" "$log"; then
+    echo "required PostgreSQL test did not pass: ${name}" >&2
+    exit 1
+  fi
+done
 '''

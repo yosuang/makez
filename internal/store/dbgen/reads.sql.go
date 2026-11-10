@@ -138,6 +138,40 @@ func (q *Queries) GetOperation(ctx context.Context, arg GetOperationParams) (Get
 	return i, err
 }
 
+const getRunByID = `-- name: GetRunByID :one
+SELECT id, task_id, state, backend_id, sandbox, process, cursor, parser_state, observer_epoch, process_exit, prepared_result, cleanup, verified_stopped, version, agent_plan, started_at, workspace_id FROM makez_runs WHERE workspace_id=$1 AND id=$2
+`
+
+type GetRunByIDParams struct {
+	WorkspaceID string
+	ID          string
+}
+
+func (q *Queries) GetRunByID(ctx context.Context, arg GetRunByIDParams) (MakezRun, error) {
+	row := q.db.QueryRow(ctx, getRunByID, arg.WorkspaceID, arg.ID)
+	var i MakezRun
+	err := row.Scan(
+		&i.ID,
+		&i.TaskID,
+		&i.State,
+		&i.BackendID,
+		&i.Sandbox,
+		&i.Process,
+		&i.Cursor,
+		&i.ParserState,
+		&i.ObserverEpoch,
+		&i.ProcessExit,
+		&i.PreparedResult,
+		&i.Cleanup,
+		&i.VerifiedStopped,
+		&i.Version,
+		&i.AgentPlan,
+		&i.StartedAt,
+		&i.WorkspaceID,
+	)
+	return i, err
+}
+
 const getRunByTask = `-- name: GetRunByTask :one
 SELECT id, task_id, state, backend_id, sandbox, process, cursor, parser_state, observer_epoch, process_exit, prepared_result, cleanup, verified_stopped, version, agent_plan, started_at, workspace_id FROM makez_runs WHERE task_id=$1
 `

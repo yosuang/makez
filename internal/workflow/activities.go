@@ -16,6 +16,7 @@ import (
 
 	"github.com/makez-dev/makez/internal/artifact"
 	"github.com/makez-dev/makez/internal/core"
+	"github.com/makez-dev/makez/internal/piharness"
 	"github.com/makez-dev/makez/internal/store"
 	"go.temporal.io/sdk/activity"
 	"go.temporal.io/sdk/temporal"
@@ -208,6 +209,9 @@ func (a *Activities) Prepare(ctx context.Context, in Input) error {
 			return convert(e)
 		}
 	}
+	if e = a.preparePi(ctx, t); e != nil {
+		return e
+	}
 	return a.DB.UpdateRun(ctx, t.Run.ID, store.RunUpdate{State: ptr(core.RunStarting)})
 }
 
@@ -220,9 +224,68 @@ func (a *Activities) Launch(ctx context.Context, in Input) error {
 	if e = active(t); e != nil {
 		return e
 	}
-	if t.Run.Process != nil {
-		return nil
+	if t.AgentID != piharness.AdapterID {
+		if t.Run.Process != nil {
+			return nil
+		}
+		return a.startAgentProcess(ctx, t, "agent", 1)
 	}
+	for {
+		err := a.launchPi(ctx, in)
+		if !errors.Is(err, store.ErrSessionBusy) {
+			return err
+		}
+		// The other task keeps the session. This task stays in its current state.
+		if err = waitForSession(ctx); err != nil {
+			return err
+		}
+	}
+}
+
+func (a *Activities) launchPi(ctx context.Context, in Input) error {
+	t, e := a.task(ctx, in)
+	if e != nil {
+		return e
+	}
+	if e = active(t); e != nil {
+		return e
+	}
+	opened, err := a.openPiAttempt(ctx, t)
+	if err != nil {
+		return err
+	}
+	if opened.Recovery.Release {
+		// The process is live and the prompt bytes have not been written. Finish that one handoff.
+		if err = a.writePiRelease(ctx, t); err != nil {
+			return err
+		}
+		return a.persistRunningPi(ctx, t)
+	}
+	opened, err = a.relaunchUnsentAttempt(ctx, t, opened)
+	if err != nil {
+		return err
+	}
+	step := opened.Attempt.Step
+	// Commit the command row before the process exists. started stays false until a process exists.
+	if err = a.markPromptSending(ctx, t, opened); err != nil {
+		return err
+	}
+	if !opened.Recovery.Send && t.Run.Process != nil && t.Run.Process.Key.Step == step && t.Run.Exit == nil {
+		return a.persistRunningPi(ctx, t)
+	}
+	phase, err := a.DB.OperationPhase(ctx, t.Run.ID, step)
+	if err != nil {
+		return err
+	}
+	if phase == "" {
+		if err = a.writePiInstruction(ctx, t, opened); err != nil {
+			return err
+		}
+	}
+	return a.startAgentProcess(ctx, t, step, opened.Attempt.Generation)
+}
+
+func (a *Activities) startAgentProcess(ctx context.Context, t store.Task, step string, generation int64) error {
 	p, e := a.plan(ctx, t)
 	if e != nil {
 		return e
@@ -230,9 +293,9 @@ func (a *Activities) Launch(ctx context.Context, in Input) error {
 	if t.Run.Sandbox == nil {
 		return fail("RESOURCE_LOST", nil)
 	}
-	req := core.StartRequest{Key: key(t, "agent"), Command: p.Command, SecretRefs: p.SecretRefs, Deadline: t.Deadline}
+	req := core.StartRequest{Key: key(t, step), Command: p.Command, SecretRefs: p.SecretRefs, Deadline: t.Deadline}
 	// An existing launch intent is reconciled even when credentials were revoked.
-	phase, e := a.DB.OperationPhase(ctx, t.Run.ID, "agent")
+	phase, e := a.DB.OperationPhase(ctx, t.Run.ID, step)
 	if e != nil {
 		return e
 	}
@@ -250,7 +313,13 @@ func (a *Activities) Launch(ctx context.Context, in Input) error {
 			return fail("PRINCIPAL_REVOKED", e)
 		}
 	}
-	_, claimed, e := a.DB.BeginOperation(ctx, t.Run.ID, "agent", hash(req))
+	if phase == "" && t.AgentID == piharness.AdapterID {
+		// Renew before the launch is recorded so a busy session does not leave a start intent behind.
+		if err := a.renewPiSession(ctx, t); err != nil {
+			return err
+		}
+	}
+	_, claimed, e := a.DB.BeginOperation(ctx, t.Run.ID, step, hash(req))
 	if e != nil {
 		return e
 	}
@@ -264,10 +333,35 @@ func (a *Activities) Launch(ctx context.Context, in Input) error {
 			}
 		}
 	}
+	if ref.ID == "" && !claimed && t.AgentID == piharness.AdapterID {
+		// BeginOperation can commit before Start. A receipt that guarantees no launch
+		// means the prompt never left, so this run starts it once.
+		observed, err := a.Provider.Process(ctx, *t.Run.Sandbox, key(t, step))
+		if err != nil {
+			return convert(err)
+		}
+		if observed.Ref == nil && observed.State == core.ProcessNotStarted {
+			ref, e = a.Provider.Start(ctx, *t.Run.Sandbox, req)
+			if e != nil {
+				var p core.ProviderError
+				if errors.As(e, &p) && p.Code() != core.OutcomeUnknown && p.Code() != core.Transient {
+					return convert(e)
+				}
+			}
+		}
+	}
 	if ref.ID == "" {
 		until := time.Now().Add(30 * time.Second)
 		for time.Now().Before(until) {
-			o, err := a.Provider.Process(ctx, *t.Run.Sandbox, key(t, "agent"))
+			if activity.IsActivity(ctx) {
+				activity.RecordHeartbeat(ctx, "launch")
+			}
+			if t.AgentID == piharness.AdapterID {
+				if err := a.renewPiSession(ctx, t); err != nil && !errors.Is(err, store.ErrSessionBusy) {
+					return err
+				}
+			}
+			o, err := a.Provider.Process(ctx, *t.Run.Sandbox, key(t, step))
 			if err == nil && o.Ref != nil && (o.State == core.ProcessRunning || o.State == core.ProcessExited) {
 				ref = *o.Ref
 				break
@@ -280,10 +374,28 @@ func (a *Activities) Launch(ctx context.Context, in Input) error {
 			return fail("START_OUTCOME_UNKNOWN", e)
 		}
 	}
-	if e = a.DB.UpdateRun(ctx, t.Run.ID, store.RunUpdate{Process: &ref, State: ptr(core.RunRunning)}); e != nil {
+	update := store.RunUpdate{Process: &ref, State: ptr(core.RunRunning)}
+	if generation > 1 {
+		// A new process restarts its output cursor. The previous attempt's events stay addressable.
+		empty := ""
+		parser := []byte{}
+		update.Cursor = &empty
+		update.ParserState = &parser
+	}
+	if e = a.DB.UpdateRun(ctx, t.Run.ID, update); e != nil {
 		return e
 	}
-	return a.DB.ConfirmOperation(ctx, t.Run.ID, "agent")
+	if e = a.DB.ConfirmOperation(ctx, t.Run.ID, step); e != nil {
+		return e
+	}
+	if t.AgentID != piharness.AdapterID {
+		return nil
+	}
+	t.Run.Process = &ref
+	if e = a.finishPromptDelivery(ctx, t); e != nil {
+		return e
+	}
+	return a.persistRunningPi(ctx, t)
 }
 
 // Observe streams process output into durable events until execution finishes.
@@ -313,15 +425,26 @@ func (a *Activities) Observe(ctx context.Context, in Input) error {
 		if err = active(latest); err != nil {
 			return err
 		}
+		if latest.AgentID == piharness.AdapterID {
+			if err = a.trackPiSession(ctx, latest); err != nil {
+				return err
+			}
+		}
 		if e = a.drainPage(ctx, t, ad, epoch); e != nil {
 			return e
 		}
-		obs, e := a.Provider.Process(ctx, *t.Run.Sandbox, key(t, "agent"))
+		obs, e := a.Provider.Process(ctx, *t.Run.Sandbox, processKey(t))
 		if e != nil {
 			return convert(e)
 		}
 		if obs.Exit != nil {
-			return a.DB.UpdateRun(ctx, t.Run.ID, store.RunUpdate{Exit: obs.Exit})
+			if e = a.DB.UpdateRun(ctx, t.Run.ID, store.RunUpdate{Exit: obs.Exit}); e != nil {
+				return e
+			}
+			if t.AgentID == piharness.AdapterID {
+				return a.finishPiAttempt(ctx, t, obs.Exit)
+			}
+			return nil
 		}
 		if obs.State != core.ProcessRunning {
 			return fail("PROCESS_OUTCOME_UNKNOWN", nil)
@@ -364,6 +487,9 @@ func (a *Activities) Finalize(ctx context.Context, in FinishInput) error {
 		return e
 	}
 	if terminal(t.State) {
+		if e = a.releasePiSession(ctx, t); e != nil {
+			return e
+		}
 		return nil
 	}
 	if t.Run == nil {
@@ -385,6 +511,9 @@ func (a *Activities) Finalize(ctx context.Context, in FinishInput) error {
 		}
 	}()
 	if t.Run.Result != nil {
+		if e = a.releasePiSession(ctx, t); e != nil {
+			return e
+		}
 		cleanup := core.CleanupPending
 		delCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 		err := a.deleteForRun(delCtx, t)
@@ -411,9 +540,16 @@ func (a *Activities) Finalize(ctx context.Context, in FinishInput) error {
 			policy = p.Stop
 		}
 		stopCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-		stopErr := a.Provider.Stop(stopCtx, *t.Run.Sandbox, key(t, "agent"), policy)
+		stopErr := a.Provider.Stop(stopCtx, *t.Run.Sandbox, processKey(t), policy)
 		cancel()
 		verified = stopErr == nil
+		// Copy a session file only when Pi left one. A missing file is not a resumed session.
+		if e = a.capturePiSession(ctx, t); e != nil {
+			return e
+		}
+		if e = a.releasePiSession(ctx, t); e != nil {
+			return e
+		}
 		if !verified {
 			delCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 			delErr := a.deleteForRun(delCtx, t)
@@ -541,6 +677,13 @@ func (a *Activities) BlockCleanup(ctx context.Context, in Input) error {
 	}
 	return a.DB.SetCleanup(ctx, t.Run.ID, core.CleanupBlocked)
 }
+func waitForSession(ctx context.Context) error {
+	if activity.IsActivity(ctx) {
+		activity.RecordHeartbeat(ctx, "session-wait")
+	}
+	return wait(ctx, time.Second)
+}
+
 func wait(ctx context.Context, d time.Duration) error {
 	timer := time.NewTimer(d)
 	defer timer.Stop()

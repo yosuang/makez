@@ -38,7 +38,7 @@ INSERT INTO makez_operations(run_id,step,request_hash,phase,workspace_id) VALUES
 UPDATE makez_operations SET phase='CONFIRMED',updated_at=now() WHERE run_id=$1 AND step=$2;
 
 -- name: InsertOutput :execrows
-INSERT INTO makez_events(run_id,source_offset,item_index,type,payload,workspace_id) VALUES($1,$2,$3,$4,$5,(SELECT workspace_id FROM makez_runs WHERE id=$1)) ON CONFLICT(run_id,source_offset,item_index) DO NOTHING;
+INSERT INTO makez_events(run_id,source_offset,item_index,type,payload,workspace_id,attempt_generation) VALUES($1,$2,$3,$4,$5,(SELECT workspace_id FROM makez_runs WHERE id=$1),COALESCE((SELECT MAX(generation) FROM makez_attempts WHERE run_id=$1),1)) ON CONFLICT(run_id,attempt_generation,source_offset,item_index) DO NOTHING;
 
 -- name: SaveOutputCursor :execrows
 UPDATE makez_runs SET cursor=$2,parser_state=$3,version=version+1 WHERE id=$1;

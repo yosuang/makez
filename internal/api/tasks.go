@@ -46,12 +46,7 @@ func (s *Server) submit(c *echo.Context) error {
 	if strings.TrimSpace(in.Prompt) == "" || len(in.Prompt) > 64<<10 {
 		return echo.NewHTTPError(400, "prompt must be 1–65536 bytes")
 	}
-	if in.AgentID == "" {
-		in.AgentID = "demo"
-	}
-	if in.AgentVersion == "" {
-		in.AgentVersion = "1"
-	}
+	in.AgentID, in.AgentVersion = submittedAgent(in.AgentID, in.AgentVersion)
 	if in.ProfileID == "" {
 		in.ProfileID = "default"
 	}
@@ -145,4 +140,16 @@ func (s *Server) cancel(c *echo.Context) error {
 		return e
 	}
 	return c.JSON(200, taskResponseDTO(v))
+}
+
+// submittedAgent keeps the public default at demo@1. Selecting pi@1 is explicit.
+// Switching the omitted agent is a breaking public change and is not applied here.
+func submittedAgent(id, version string) (string, string) {
+	if id == "" {
+		id = "demo"
+	}
+	if version == "" {
+		version = "1"
+	}
+	return id, version
 }
