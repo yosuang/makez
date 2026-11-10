@@ -2,9 +2,12 @@
 //
 // It is a substitute for OpenSandbox: one command runs on this machine, and
 // /workspace is a private directory. It does not create a container, dial a
-// sandbox API, or apply a network policy. The default makez build does not
-// import it. A listening worker selects it only when that binary is built with
-// the makezhostexec tag and MAKEZ_TEST_HOST_EXEC names the directory.
+// sandbox API, or apply a network policy. It also does not apply the supervisor
+// rule that rejects workspace writes while an agent process is running, so a
+// listen-path pass through this fake is not the OpenSandbox result. The default
+// makez build does not import it. A listening worker selects it only when that
+// binary is built with the makezhostexec tag and MAKEZ_TEST_HOST_EXEC names the
+// directory.
 package hostexec
 
 import (
