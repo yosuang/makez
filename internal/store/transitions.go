@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"path"
+	"strconv"
 	"strings"
 	"time"
 
@@ -70,8 +71,12 @@ func (s *Store) UpdateRun(ctx context.Context, id string, u RunUpdate) error {
 		if u.Process.Key.RunID != r.ID || u.Process.Key.TaskID != r.TaskID || r.Sandbox == nil || u.Process.Sandbox.ID != r.Sandbox.ID {
 			return ErrConflict
 		}
+		// A later attempt replaces the process only after the previous one has exited.
 		if r.Process != nil && r.Process.ID != u.Process.ID {
-			return ErrConflict
+			if r.Exit == nil {
+				return ErrConflict
+			}
+			r.Exit = nil
 		}
 		r.Process = u.Process
 	}
@@ -227,9 +232,21 @@ func (s *Store) SetCleanup(ctx context.Context, id string, state core.CleanupSta
 	return nil
 }
 
+func operationStep(step string) bool {
+	if step == "sandbox" || step == "agent" {
+		return true
+	}
+	rest, ok := strings.CutPrefix(step, "agent:")
+	if !ok || rest == "" || len(rest) > 3 {
+		return false
+	}
+	generation, err := strconv.Atoi(rest)
+	return err == nil && generation >= 1 && generation <= 999 && strconv.Itoa(generation) == rest
+}
+
 // BeginOperation records the intent and request hash of a keyed external operation.
 func (s *Store) BeginOperation(ctx context.Context, runID, step, hash string) (string, bool, error) {
-	if hash == "" || (step != "sandbox" && step != "agent") {
+	if hash == "" || !operationStep(step) {
 		return "", false, ErrConflict
 	}
 	tx, err := s.pool.Begin(ctx)

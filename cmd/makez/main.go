@@ -20,6 +20,7 @@ import (
 	"github.com/makez-dev/makez/internal/api"
 	"github.com/makez-dev/makez/internal/artifact"
 	"github.com/makez-dev/makez/internal/core"
+	"github.com/makez-dev/makez/internal/piharness"
 	"github.com/makez-dev/makez/internal/sandbox"
 	"github.com/makez-dev/makez/internal/secret"
 	"github.com/makez-dev/makez/internal/store"
@@ -259,6 +260,25 @@ func loadAgents() (map[string]core.AgentAdapter, error) {
 		}
 		agents[key] = adapter
 	}
+	piConfig := agent.PiConfig{}
+	if raw := os.Getenv("MAKEZ_PI_AGENT"); raw != "" {
+		if decodeConfig([]byte(raw), &piConfig) != nil {
+			return nil, errors.New("invalid MAKEZ_PI_AGENT configuration")
+		}
+	}
+	piAdapter, err := agent.NewPi(piConfig)
+	if err != nil {
+		return nil, errors.New("invalid MAKEZ_PI_AGENT configuration")
+	}
+	identity := piAdapter.Identity()
+	if identity.ID != piharness.AdapterID || identity.Version != piharness.AdapterVersion {
+		return nil, errors.New("invalid MAKEZ_PI_AGENT configuration")
+	}
+	key := identity.ID + "@" + identity.Version
+	if _, exists := agents[key]; exists {
+		return nil, errors.New("duplicate agent registration")
+	}
+	agents[key] = piAdapter
 	return agents, nil
 }
 

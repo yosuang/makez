@@ -16,6 +16,7 @@ import (
 
 	"github.com/makez-dev/makez/internal/artifact"
 	"github.com/makez-dev/makez/internal/core"
+	"github.com/makez-dev/makez/internal/piharness"
 	"github.com/makez-dev/makez/internal/store"
 	"go.temporal.io/sdk/activity"
 	"go.temporal.io/sdk/temporal"
@@ -208,6 +209,9 @@ func (a *Activities) Prepare(ctx context.Context, in Input) error {
 			return convert(e)
 		}
 	}
+	if e = a.preparePi(ctx, t); e != nil {
+		return e
+	}
 	return a.DB.UpdateRun(ctx, t.Run.ID, store.RunUpdate{State: ptr(core.RunStarting)})
 }
 
@@ -220,7 +224,28 @@ func (a *Activities) Launch(ctx context.Context, in Input) error {
 	if e = active(t); e != nil {
 		return e
 	}
-	if t.Run.Process != nil {
+	step := "agent"
+	generation := int64(1)
+	if t.AgentID == piharness.AdapterID {
+		opened, err := a.openPiAttempt(ctx, t)
+		if err != nil {
+			return err
+		}
+		step = opened.Attempt.Step
+		generation = opened.Attempt.Generation
+		if t.Run.Process != nil && t.Run.Process.Key.Step == step && t.Run.Exit == nil {
+			return nil
+		}
+		phase, err := a.DB.OperationPhase(ctx, t.Run.ID, step)
+		if err != nil {
+			return err
+		}
+		if phase == "" {
+			if err = a.writePiInstruction(ctx, t, opened); err != nil {
+				return err
+			}
+		}
+	} else if t.Run.Process != nil {
 		return nil
 	}
 	p, e := a.plan(ctx, t)
@@ -230,9 +255,9 @@ func (a *Activities) Launch(ctx context.Context, in Input) error {
 	if t.Run.Sandbox == nil {
 		return fail("RESOURCE_LOST", nil)
 	}
-	req := core.StartRequest{Key: key(t, "agent"), Command: p.Command, SecretRefs: p.SecretRefs, Deadline: t.Deadline}
+	req := core.StartRequest{Key: key(t, step), Command: p.Command, SecretRefs: p.SecretRefs, Deadline: t.Deadline}
 	// An existing launch intent is reconciled even when credentials were revoked.
-	phase, e := a.DB.OperationPhase(ctx, t.Run.ID, "agent")
+	phase, e := a.DB.OperationPhase(ctx, t.Run.ID, step)
 	if e != nil {
 		return e
 	}
@@ -250,7 +275,7 @@ func (a *Activities) Launch(ctx context.Context, in Input) error {
 			return fail("PRINCIPAL_REVOKED", e)
 		}
 	}
-	_, claimed, e := a.DB.BeginOperation(ctx, t.Run.ID, "agent", hash(req))
+	_, claimed, e := a.DB.BeginOperation(ctx, t.Run.ID, step, hash(req))
 	if e != nil {
 		return e
 	}
@@ -267,7 +292,7 @@ func (a *Activities) Launch(ctx context.Context, in Input) error {
 	if ref.ID == "" {
 		until := time.Now().Add(30 * time.Second)
 		for time.Now().Before(until) {
-			o, err := a.Provider.Process(ctx, *t.Run.Sandbox, key(t, "agent"))
+			o, err := a.Provider.Process(ctx, *t.Run.Sandbox, key(t, step))
 			if err == nil && o.Ref != nil && (o.State == core.ProcessRunning || o.State == core.ProcessExited) {
 				ref = *o.Ref
 				break
@@ -280,10 +305,18 @@ func (a *Activities) Launch(ctx context.Context, in Input) error {
 			return fail("START_OUTCOME_UNKNOWN", e)
 		}
 	}
-	if e = a.DB.UpdateRun(ctx, t.Run.ID, store.RunUpdate{Process: &ref, State: ptr(core.RunRunning)}); e != nil {
+	update := store.RunUpdate{Process: &ref, State: ptr(core.RunRunning)}
+	if generation > 1 {
+		// A new process restarts its output cursor. The previous attempt's events stay addressable.
+		empty := ""
+		parser := []byte{}
+		update.Cursor = &empty
+		update.ParserState = &parser
+	}
+	if e = a.DB.UpdateRun(ctx, t.Run.ID, update); e != nil {
 		return e
 	}
-	return a.DB.ConfirmOperation(ctx, t.Run.ID, "agent")
+	return a.DB.ConfirmOperation(ctx, t.Run.ID, step)
 }
 
 // Observe streams process output into durable events until execution finishes.
@@ -316,12 +349,18 @@ func (a *Activities) Observe(ctx context.Context, in Input) error {
 		if e = a.drainPage(ctx, t, ad, epoch); e != nil {
 			return e
 		}
-		obs, e := a.Provider.Process(ctx, *t.Run.Sandbox, key(t, "agent"))
+		obs, e := a.Provider.Process(ctx, *t.Run.Sandbox, processKey(t))
 		if e != nil {
 			return convert(e)
 		}
 		if obs.Exit != nil {
-			return a.DB.UpdateRun(ctx, t.Run.ID, store.RunUpdate{Exit: obs.Exit})
+			if e = a.DB.UpdateRun(ctx, t.Run.ID, store.RunUpdate{Exit: obs.Exit}); e != nil {
+				return e
+			}
+			if t.AgentID == piharness.AdapterID {
+				return a.finishPiAttempt(ctx, t, obs.Exit)
+			}
+			return nil
 		}
 		if obs.State != core.ProcessRunning {
 			return fail("PROCESS_OUTCOME_UNKNOWN", nil)
@@ -411,9 +450,13 @@ func (a *Activities) Finalize(ctx context.Context, in FinishInput) error {
 			policy = p.Stop
 		}
 		stopCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-		stopErr := a.Provider.Stop(stopCtx, *t.Run.Sandbox, key(t, "agent"), policy)
+		stopErr := a.Provider.Stop(stopCtx, *t.Run.Sandbox, processKey(t), policy)
 		cancel()
 		verified = stopErr == nil
+		// Read the session file after stop so a shutdown flush is visible, and before any delete.
+		if e = a.capturePiSession(ctx, t); e != nil {
+			return e
+		}
 		if !verified {
 			delCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 			delErr := a.deleteForRun(delCtx, t)

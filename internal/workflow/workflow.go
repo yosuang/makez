@@ -4,6 +4,7 @@ package workflow
 import (
 	"time"
 
+	"github.com/makez-dev/makez/internal/piharness"
 	"go.temporal.io/sdk/temporal"
 	tw "go.temporal.io/sdk/workflow"
 )
@@ -51,9 +52,33 @@ func Task(ctx tw.Context, in Input) error {
 				cancel()
 			}
 		})
-		for _, name := range []string{"Prepare", "Launch", "Observe"} {
-			activityCtx := execution
-			if name == "Observe" {
+		// pi-attempt-v1 replays the original linear path for workflows that started
+		// before a lost Pi process could be launched again. New runs use the loop.
+		if tw.GetVersion(ctx, "pi-attempt-v1", tw.DefaultVersion, 1) == tw.DefaultVersion {
+			for _, name := range []string{"Prepare", "Launch", "Observe"} {
+				activityCtx := execution
+				if name == "Observe" {
+					waitOpts := opts
+					waitOpts.StartToCloseTimeout = init.Deadline.Sub(tw.Now(ctx)) + time.Minute
+					if waitOpts.StartToCloseTimeout < time.Minute {
+						waitOpts.StartToCloseTimeout = time.Minute
+					}
+					waitOpts.HeartbeatTimeout = 30 * time.Second
+					waitOpts.WaitForCancellation = true
+					activityCtx = tw.WithActivityOptions(execution, waitOpts)
+				}
+				err = tw.ExecuteActivity(activityCtx, name, in).Get(activityCtx, nil)
+				if err != nil {
+					break
+				}
+			}
+		} else {
+			err = tw.ExecuteActivity(execution, "Prepare", in).Get(execution, nil)
+			for attempt := 1; err == nil && attempt <= piharness.MaxAttempts; attempt++ {
+				err = tw.ExecuteActivity(execution, "Launch", in).Get(execution, nil)
+				if err != nil {
+					break
+				}
 				waitOpts := opts
 				waitOpts.StartToCloseTimeout = init.Deadline.Sub(tw.Now(ctx)) + time.Minute
 				if waitOpts.StartToCloseTimeout < time.Minute {
@@ -61,11 +86,15 @@ func Task(ctx tw.Context, in Input) error {
 				}
 				waitOpts.HeartbeatTimeout = 30 * time.Second
 				waitOpts.WaitForCancellation = true
-				activityCtx = tw.WithActivityOptions(execution, waitOpts)
-			}
-			err = tw.ExecuteActivity(activityCtx, name, in).Get(activityCtx, nil)
-			if err != nil {
-				break
+				observeCtx := tw.WithActivityOptions(execution, waitOpts)
+				err = tw.ExecuteActivity(observeCtx, "Observe", in).Get(observeCtx, nil)
+				if err == nil {
+					break
+				}
+				var app *temporal.ApplicationError
+				if findApplicationError(err, &app) && app.Type() == "ATTEMPT_LOST" && attempt < piharness.MaxAttempts {
+					err = nil
+				}
 			}
 		}
 		stopTimer()

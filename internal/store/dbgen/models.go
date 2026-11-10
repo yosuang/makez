@@ -28,6 +28,19 @@ type MakezArtifact struct {
 	WorkspaceID string
 }
 
+type MakezAttempt struct {
+	WorkspaceID  string
+	RunID        string
+	SessionID    string
+	Generation   int64
+	Step         string
+	State        string
+	Disposition  string
+	PromptSha256 string
+	CreatedAt    pgtype.Timestamptz
+	UpdatedAt    pgtype.Timestamptz
+}
+
 type MakezAuditEvent struct {
 	ID          string
 	WorkspaceID *string
@@ -58,14 +71,15 @@ type MakezAuthzOutbox struct {
 }
 
 type MakezEvent struct {
-	Seq          int64
-	RunID        string
-	SourceOffset string
-	ItemIndex    int64
-	Type         string
-	Payload      []byte
-	CreatedAt    pgtype.Timestamptz
-	WorkspaceID  string
+	Seq               int64
+	RunID             string
+	SourceOffset      string
+	ItemIndex         int64
+	Type              string
+	Payload           []byte
+	CreatedAt         pgtype.Timestamptz
+	WorkspaceID       string
+	AttemptGeneration int64
 }
 
 type MakezExternalIdentity struct {
@@ -104,6 +118,22 @@ type MakezMembership struct {
 	Status      string
 	CreatedAt   pgtype.Timestamptz
 	UpdatedAt   pgtype.Timestamptz
+}
+
+type MakezNativeSession struct {
+	ID               string
+	WorkspaceID      string
+	Scope            string
+	BotID            *string
+	ConversationID   *string
+	DelegationRunID  *string
+	HarnessID        string
+	HarnessPin       string
+	LastDisposition  string
+	LastPromptSha256 string
+	Checkpoint       []byte
+	CreatedAt        pgtype.Timestamptz
+	UpdatedAt        pgtype.Timestamptz
 }
 
 type MakezOperation struct {
