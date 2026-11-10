@@ -9,6 +9,86 @@ import (
 	"context"
 )
 
+const claimSessionWriter = `-- name: ClaimSessionWriter :exec
+UPDATE makez_native_sessions
+SET writer_run_id = $1,
+    writer_fence = CASE
+      WHEN writer_run_id IS DISTINCT FROM $1 THEN writer_fence + 1
+      ELSE writer_fence
+    END,
+    writer_until = now() + ($2::int * interval '1 second'),
+    updated_at = now()
+WHERE id = $3 AND workspace_id = $4
+`
+
+type ClaimSessionWriterParams struct {
+	WriterRunID  *string
+	LeaseSeconds int32
+	ID           string
+	WorkspaceID  string
+}
+
+func (q *Queries) ClaimSessionWriter(ctx context.Context, arg ClaimSessionWriterParams) error {
+	_, err := q.db.Exec(ctx, claimSessionWriter,
+		arg.WriterRunID,
+		arg.LeaseSeconds,
+		arg.ID,
+		arg.WorkspaceID,
+	)
+	return err
+}
+
+const getNativeCommand = `-- name: GetNativeCommand :one
+SELECT c.disposition, c.run_id, c.generation
+FROM makez_native_commands c
+JOIN makez_native_sessions s ON s.id = c.session_id
+WHERE c.session_id = $1 AND s.workspace_id = $2 AND c.prompt_sha256 = $3
+`
+
+type GetNativeCommandParams struct {
+	SessionID    string
+	WorkspaceID  string
+	PromptSha256 string
+}
+
+type GetNativeCommandRow struct {
+	Disposition string
+	RunID       string
+	Generation  int64
+}
+
+func (q *Queries) GetNativeCommand(ctx context.Context, arg GetNativeCommandParams) (GetNativeCommandRow, error) {
+	row := q.db.QueryRow(ctx, getNativeCommand, arg.SessionID, arg.WorkspaceID, arg.PromptSha256)
+	var i GetNativeCommandRow
+	err := row.Scan(&i.Disposition, &i.RunID, &i.Generation)
+	return i, err
+}
+
+const hasUnknownNativeCommand = `-- name: HasUnknownNativeCommand :one
+SELECT EXISTS (
+  SELECT 1
+  FROM makez_native_commands c
+  JOIN makez_native_sessions s ON s.id = c.session_id
+  WHERE c.session_id = $1
+    AND s.workspace_id = $2
+    AND c.prompt_sha256 <> $3
+    AND c.disposition IN ('sending', 'accepted')
+) AS unknown
+`
+
+type HasUnknownNativeCommandParams struct {
+	SessionID    string
+	WorkspaceID  string
+	PromptSha256 string
+}
+
+func (q *Queries) HasUnknownNativeCommand(ctx context.Context, arg HasUnknownNativeCommandParams) (bool, error) {
+	row := q.db.QueryRow(ctx, hasUnknownNativeCommand, arg.SessionID, arg.WorkspaceID, arg.PromptSha256)
+	var unknown bool
+	err := row.Scan(&unknown)
+	return unknown, err
+}
+
 const insertAttempt = `-- name: InsertAttempt :execrows
 INSERT INTO makez_attempts (
   workspace_id, run_id, session_id, generation, step, state, prompt_sha256
@@ -193,6 +273,31 @@ func (q *Queries) LockNativeSession(ctx context.Context, arg LockNativeSessionPa
 	return i, err
 }
 
+const lockSessionOwner = `-- name: LockSessionOwner :one
+SELECT writer_run_id, writer_fence, (writer_until IS NOT NULL AND writer_until > now()) AS writer_current
+FROM makez_native_sessions
+WHERE id = $1 AND workspace_id = $2
+FOR UPDATE
+`
+
+type LockSessionOwnerParams struct {
+	ID          string
+	WorkspaceID string
+}
+
+type LockSessionOwnerRow struct {
+	WriterRunID   *string
+	WriterFence   int64
+	WriterCurrent *bool
+}
+
+func (q *Queries) LockSessionOwner(ctx context.Context, arg LockSessionOwnerParams) (LockSessionOwnerRow, error) {
+	row := q.db.QueryRow(ctx, lockSessionOwner, arg.ID, arg.WorkspaceID)
+	var i LockSessionOwnerRow
+	err := row.Scan(&i.WriterRunID, &i.WriterFence, &i.WriterCurrent)
+	return i, err
+}
+
 const nativeCheckpoint = `-- name: NativeCheckpoint :one
 SELECT checkpoint
 FROM makez_native_sessions
@@ -209,6 +314,23 @@ func (q *Queries) NativeCheckpoint(ctx context.Context, arg NativeCheckpointPara
 	var checkpoint []byte
 	err := row.Scan(&checkpoint)
 	return checkpoint, err
+}
+
+const releaseSessionWriter = `-- name: ReleaseSessionWriter :exec
+UPDATE makez_native_sessions
+SET writer_run_id = NULL, writer_until = NULL, updated_at = now()
+WHERE id = $1 AND workspace_id = $2 AND writer_run_id = $3
+`
+
+type ReleaseSessionWriterParams struct {
+	ID          string
+	WorkspaceID string
+	WriterRunID *string
+}
+
+func (q *Queries) ReleaseSessionWriter(ctx context.Context, arg ReleaseSessionWriterParams) error {
+	_, err := q.db.Exec(ctx, releaseSessionWriter, arg.ID, arg.WorkspaceID, arg.WriterRunID)
+	return err
 }
 
 const saveAttemptOutcome = `-- name: SaveAttemptOutcome :execrows
@@ -241,20 +363,48 @@ func (q *Queries) SaveAttemptOutcome(ctx context.Context, arg SaveAttemptOutcome
 	return result.RowsAffected(), nil
 }
 
+const saveAttemptState = `-- name: SaveAttemptState :execrows
+UPDATE makez_attempts
+SET state = CASE WHEN $1::text = '' THEN state ELSE $1 END,
+    updated_at = now()
+WHERE workspace_id = $2 AND run_id = $3 AND generation = $4
+`
+
+type SaveAttemptStateParams struct {
+	State       string
+	WorkspaceID string
+	RunID       string
+	Generation  int64
+}
+
+func (q *Queries) SaveAttemptState(ctx context.Context, arg SaveAttemptStateParams) (int64, error) {
+	result, err := q.db.Exec(ctx, saveAttemptState,
+		arg.State,
+		arg.WorkspaceID,
+		arg.RunID,
+		arg.Generation,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const saveNativeCheckpoint = `-- name: SaveNativeCheckpoint :execrows
 UPDATE makez_native_sessions
-SET checkpoint = $3, updated_at = now()
-WHERE id = $1 AND workspace_id = $2 AND octet_length($3) BETWEEN 1 AND 1048576
+SET checkpoint = $1::bytea, updated_at = now()
+WHERE id = $2 AND workspace_id = $3
+  AND octet_length($1::bytea) BETWEEN 1 AND 1048576
 `
 
 type SaveNativeCheckpointParams struct {
+	Checkpoint  []byte
 	ID          string
 	WorkspaceID string
-	Checkpoint  []byte
 }
 
 func (q *Queries) SaveNativeCheckpoint(ctx context.Context, arg SaveNativeCheckpointParams) (int64, error) {
-	result, err := q.db.Exec(ctx, saveNativeCheckpoint, arg.ID, arg.WorkspaceID, arg.Checkpoint)
+	result, err := q.db.Exec(ctx, saveNativeCheckpoint, arg.Checkpoint, arg.ID, arg.WorkspaceID)
 	if err != nil {
 		return 0, err
 	}
@@ -285,4 +435,37 @@ func (q *Queries) SaveNativeDisposition(ctx context.Context, arg SaveNativeDispo
 		return 0, err
 	}
 	return result.RowsAffected(), nil
+}
+
+const upsertNativeCommand = `-- name: UpsertNativeCommand :exec
+INSERT INTO makez_native_commands (
+  session_id, prompt_sha256, disposition, workspace_id, run_id, generation
+) VALUES ($1, $2, $3, $4, $5, $6)
+ON CONFLICT (session_id, prompt_sha256) DO UPDATE
+SET disposition = EXCLUDED.disposition,
+    workspace_id = EXCLUDED.workspace_id,
+    run_id = EXCLUDED.run_id,
+    generation = EXCLUDED.generation,
+    updated_at = now()
+`
+
+type UpsertNativeCommandParams struct {
+	SessionID    string
+	PromptSha256 string
+	Disposition  string
+	WorkspaceID  string
+	RunID        string
+	Generation   int64
+}
+
+func (q *Queries) UpsertNativeCommand(ctx context.Context, arg UpsertNativeCommandParams) error {
+	_, err := q.db.Exec(ctx, upsertNativeCommand,
+		arg.SessionID,
+		arg.PromptSha256,
+		arg.Disposition,
+		arg.WorkspaceID,
+		arg.RunID,
+		arg.Generation,
+	)
+	return err
 }

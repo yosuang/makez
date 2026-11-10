@@ -74,8 +74,22 @@ func Task(ctx tw.Context, in Input) error {
 			}
 		} else {
 			err = tw.ExecuteActivity(execution, "Prepare", in).Get(execution, nil)
+			// pi-session-lease-v1 lets Launch wait out another run's session lease
+			// inside the task deadline. Workflows that already started keep the
+			// original three-minute Launch options.
+			launchCtx := execution
+			if err == nil && tw.GetVersion(ctx, "pi-session-lease-v1", tw.DefaultVersion, 1) == 1 {
+				launchOpts := opts
+				launchOpts.StartToCloseTimeout = init.Deadline.Sub(tw.Now(ctx)) + time.Minute
+				if launchOpts.StartToCloseTimeout < time.Minute {
+					launchOpts.StartToCloseTimeout = time.Minute
+				}
+				launchOpts.HeartbeatTimeout = 30 * time.Second
+				launchOpts.WaitForCancellation = true
+				launchCtx = tw.WithActivityOptions(execution, launchOpts)
+			}
 			for attempt := 1; err == nil && attempt <= piharness.MaxAttempts; attempt++ {
-				err = tw.ExecuteActivity(execution, "Launch", in).Get(execution, nil)
+				err = tw.ExecuteActivity(launchCtx, "Launch", in).Get(launchCtx, nil)
 				if err != nil {
 					break
 				}

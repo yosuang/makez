@@ -14,6 +14,19 @@ import (
 // ErrAttemptsExhausted means this run has already used its process generations.
 var ErrAttemptsExhausted = errors.New("attempt limit reached")
 
+// ErrSessionBusy means another run holds this session's writer lease.
+// Callers wait inside the existing task. This is not a public task status.
+var ErrSessionBusy = errors.New("native session writer is held")
+
+// ErrStaleWriter means this run is not the current writer, or the attempt
+// generation is no longer the latest one. The command row is left unchanged.
+var ErrStaleWriter = errors.New("stale native session writer")
+
+// sessionLeaseSeconds is how long a writer keeps the session after the last
+// renew. It is longer than the activity heartbeat so a live worker can extend
+// it, and short enough that a dead worker does not block the session indefinitely.
+const sessionLeaseSeconds int32 = 120
+
 // SessionIdentity selects one logical native session. It is not a conversation,
 // an owner binding, or a retention policy.
 type SessionIdentity struct {
@@ -26,6 +39,7 @@ type SessionIdentity struct {
 }
 
 // NativeSession is the durable correlation for one harness pin.
+// Disposition and PromptSHA256 cache the latest command write. A prompt is sent or held from its own command row.
 type NativeSession struct {
 	ID              string
 	Disposition     string
@@ -90,6 +104,7 @@ func sessionLabel(value string) bool {
 }
 
 // OpenAttempt returns the current open process generation or the next one after a loss.
+// It acquires this run's writer lease. A different run that already holds an unexpired lease gets ErrSessionBusy.
 func (s *Store) OpenAttempt(ctx context.Context, workspace, runID, sessionID, promptHash string) (Attempt, error) {
 	if !sha256Hex.MatchString(promptHash) || sessionID == "" {
 		return Attempt{}, ErrInvalidInput
@@ -100,10 +115,8 @@ func (s *Store) OpenAttempt(ctx context.Context, workspace, runID, sessionID, pr
 	}
 	defer tx.Rollback(ctx) //nolint:errcheck // Commit closes the transaction; pgx discards the connection on rollback failure.
 	q := dbgen.New(tx)
-	if _, err = q.LockNativeSession(ctx, dbgen.LockNativeSessionParams{ID: sessionID, WorkspaceID: workspace}); err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			err = ErrNotFound
-		}
+	// The row lease covers every worker. A process-local mutex does not.
+	if err = claimWriter(ctx, q, workspace, sessionID, runID); err != nil {
 		return Attempt{}, err
 	}
 	latest, err := q.LockLatestAttempt(ctx, dbgen.LockLatestAttemptParams{WorkspaceID: workspace, RunID: runID})
@@ -160,22 +173,86 @@ func (s *Store) LoadCheckpoint(ctx context.Context, workspace, sessionID string)
 	return data, err
 }
 
-// SaveCheckpoint stores bytes Pi actually wrote. It does not invent a session file.
-func (s *Store) SaveCheckpoint(ctx context.Context, workspace, sessionID string, data []byte) error {
-	if len(data) == 0 || len(data) > 1<<20 {
+// SaveCheckpoint stores bytes Pi actually wrote. The current writer is the only caller that can replace them.
+func (s *Store) SaveCheckpoint(ctx context.Context, workspace, sessionID, runID string, data []byte) error {
+	if len(data) == 0 || len(data) > 1<<20 || runID == "" {
 		return ErrInvalidInput
 	}
-	rows, err := dbgen.New(s.pool).SaveNativeCheckpoint(ctx, dbgen.SaveNativeCheckpointParams{ID: sessionID, WorkspaceID: workspace, Checkpoint: data})
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck // Commit closes the transaction; pgx discards the connection on rollback failure.
+	q := dbgen.New(tx)
+	if err = requireWriter(ctx, q, workspace, sessionID, runID); err != nil {
+		return err
+	}
+	rows, err := q.SaveNativeCheckpoint(ctx, dbgen.SaveNativeCheckpointParams{ID: sessionID, WorkspaceID: workspace, Checkpoint: data})
 	if err != nil {
 		return err
 	}
 	if rows != 1 {
 		return ErrNotFound
 	}
-	return nil
+	return tx.Commit(ctx)
 }
 
-// SaveAttemptProgress records how far the native prompt got for this generation.
+// AcquireSessionWriter takes or extends this run's lease. An unexpired lease held by another run returns ErrSessionBusy.
+func (s *Store) AcquireSessionWriter(ctx context.Context, workspace, sessionID, runID string) error {
+	if sessionID == "" || runID == "" {
+		return ErrInvalidInput
+	}
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck // Commit closes the transaction; pgx discards the connection on rollback failure.
+	if err = claimWriter(ctx, dbgen.New(tx), workspace, sessionID, runID); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
+// ReleaseSessionWriter clears the lease only when this run still holds it. Command rows stay.
+func (s *Store) ReleaseSessionWriter(ctx context.Context, workspace, sessionID, runID string) error {
+	if sessionID == "" || runID == "" {
+		return ErrInvalidInput
+	}
+	holder := runID
+	return dbgen.New(s.pool).ReleaseSessionWriter(ctx, dbgen.ReleaseSessionWriterParams{
+		ID: sessionID, WorkspaceID: workspace, WriterRunID: &holder,
+	})
+}
+
+// PromptDisposition returns the command row for this prompt. An unknown prompt is an empty string.
+func (s *Store) PromptDisposition(ctx context.Context, workspace, sessionID, promptHash string) (string, error) {
+	if sessionID == "" || !sha256Hex.MatchString(promptHash) {
+		return "", ErrInvalidInput
+	}
+	row, err := dbgen.New(s.pool).GetNativeCommand(ctx, dbgen.GetNativeCommandParams{
+		SessionID: sessionID, WorkspaceID: workspace, PromptSha256: promptHash,
+	})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	return row.Disposition, nil
+}
+
+// HasUnknownPrompt reports whether a different prompt is still sending or accepted.
+func (s *Store) HasUnknownPrompt(ctx context.Context, workspace, sessionID, promptHash string) (bool, error) {
+	if sessionID == "" || !sha256Hex.MatchString(promptHash) {
+		return false, ErrInvalidInput
+	}
+	return dbgen.New(s.pool).HasUnknownNativeCommand(ctx, dbgen.HasUnknownNativeCommandParams{
+		SessionID: sessionID, WorkspaceID: workspace, PromptSha256: promptHash,
+	})
+}
+
+// SaveAttemptProgress records one prompt's disposition for this generation.
+// Another prompt's row is not updated. A writer who lost the lease, and an older generation, leave the row unchanged.
 func (s *Store) SaveAttemptProgress(ctx context.Context, workspace, runID, sessionID string, generation int64, disposition, promptHash, state string) error {
 	if !dispositions[disposition] || !sha256Hex.MatchString(promptHash) {
 		return ErrInvalidInput
@@ -189,14 +266,61 @@ func (s *Store) SaveAttemptProgress(ctx context.Context, workspace, runID, sessi
 	}
 	defer tx.Rollback(ctx) //nolint:errcheck // Commit closes the transaction; pgx discards the connection on rollback failure.
 	q := dbgen.New(tx)
-	rows, err := q.SaveNativeDisposition(ctx, dbgen.SaveNativeDispositionParams{ID: sessionID, WorkspaceID: workspace, LastDisposition: disposition, LastPromptSha256: promptHash})
+	if err = requireWriter(ctx, q, workspace, sessionID, runID); err != nil {
+		return err
+	}
+	latest, err := q.LockLatestAttempt(ctx, dbgen.LockLatestAttemptParams{WorkspaceID: workspace, RunID: runID})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return ErrNotFound
+	}
+	if err != nil {
+		return err
+	}
+	if latest.SessionID != sessionID {
+		return ErrConflict
+	}
+	if latest.Generation != generation {
+		return ErrStaleWriter
+	}
+	if disposition == "none" {
+		return commitAttemptState(ctx, tx, q, workspace, runID, generation, state)
+	}
+	current, err := q.GetNativeCommand(ctx, dbgen.GetNativeCommandParams{SessionID: sessionID, WorkspaceID: workspace, PromptSha256: promptHash})
+	hasRow := true
+	if errors.Is(err, pgx.ErrNoRows) {
+		hasRow = false
+		err = nil
+	}
+	if err != nil {
+		return err
+	}
+	curDisp, curRun := "", ""
+	var curGen int64
+	if hasRow {
+		curDisp, curRun, curGen = current.Disposition, current.RunID, current.Generation
+	}
+	if !allowCommand(hasRow, curDisp, disposition, curGen, generation, curRun, runID) {
+		return commitAttemptState(ctx, tx, q, workspace, runID, generation, state)
+	}
+	if err = q.UpsertNativeCommand(ctx, dbgen.UpsertNativeCommandParams{
+		SessionID: sessionID, PromptSha256: promptHash, Disposition: disposition,
+		WorkspaceID: workspace, RunID: runID, Generation: generation,
+	}); err != nil {
+		return err
+	}
+	// last_disposition is a cache of this write. Replay decisions use the command row.
+	rows, err := q.SaveNativeDisposition(ctx, dbgen.SaveNativeDispositionParams{
+		ID: sessionID, WorkspaceID: workspace, LastDisposition: disposition, LastPromptSha256: promptHash,
+	})
 	if err != nil {
 		return err
 	}
 	if rows != 1 {
 		return ErrNotFound
 	}
-	rows, err = q.SaveAttemptOutcome(ctx, dbgen.SaveAttemptOutcomeParams{WorkspaceID: workspace, RunID: runID, Generation: generation, Disposition: disposition, State: state})
+	rows, err = q.SaveAttemptOutcome(ctx, dbgen.SaveAttemptOutcomeParams{
+		WorkspaceID: workspace, RunID: runID, Generation: generation, Disposition: disposition, State: state,
+	})
 	if err != nil {
 		return err
 	}
@@ -204,6 +328,86 @@ func (s *Store) SaveAttemptProgress(ctx context.Context, workspace, runID, sessi
 		return ErrNotFound
 	}
 	return tx.Commit(ctx)
+}
+
+func claimWriter(ctx context.Context, q *dbgen.Queries, workspace, sessionID, runID string) error {
+	owner, err := q.LockSessionOwner(ctx, dbgen.LockSessionOwnerParams{ID: sessionID, WorkspaceID: workspace})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return ErrNotFound
+	}
+	if err != nil {
+		return err
+	}
+	if owner.WriterCurrent != nil && *owner.WriterCurrent && owner.WriterRunID != nil && *owner.WriterRunID != runID {
+		return ErrSessionBusy
+	}
+	holder := runID
+	return q.ClaimSessionWriter(ctx, dbgen.ClaimSessionWriterParams{
+		WriterRunID: &holder, LeaseSeconds: sessionLeaseSeconds, ID: sessionID, WorkspaceID: workspace,
+	})
+}
+
+func requireWriter(ctx context.Context, q *dbgen.Queries, workspace, sessionID, runID string) error {
+	owner, err := q.LockSessionOwner(ctx, dbgen.LockSessionOwnerParams{ID: sessionID, WorkspaceID: workspace})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return ErrNotFound
+	}
+	if err != nil {
+		return err
+	}
+	if owner.WriterCurrent == nil || !*owner.WriterCurrent || owner.WriterRunID == nil || *owner.WriterRunID != runID {
+		return ErrStaleWriter
+	}
+	return nil
+}
+
+func commitAttemptState(ctx context.Context, tx pgx.Tx, q *dbgen.Queries, workspace, runID string, generation int64, state string) error {
+	if state == "" {
+		return nil
+	}
+	rows, err := q.SaveAttemptState(ctx, dbgen.SaveAttemptStateParams{
+		State: state, WorkspaceID: workspace, RunID: runID, Generation: generation,
+	})
+	if err != nil {
+		return err
+	}
+	if rows != 1 {
+		return ErrNotFound
+	}
+	return tx.Commit(ctx)
+}
+
+// allowCommand decides whether this write may change the prompt's command row.
+// sending and accepted stay put when a different run observes them.
+func allowCommand(hasRow bool, currentDisposition, next string, currentGen, nextGen int64, currentRun, nextRun string) bool {
+	if next == "" || next == "none" {
+		return false
+	}
+	if !hasRow {
+		return true
+	}
+	if currentRun != nextRun && (currentDisposition == "sending" || currentDisposition == "accepted") {
+		return false
+	}
+	if nextGen < currentGen {
+		return false
+	}
+	if currentDisposition == next && currentRun == nextRun && currentGen == nextGen {
+		return true
+	}
+	switch currentDisposition {
+	case "sending":
+		return next == "accepted" || next == "settled" || next == "rejected" || next == "reconciled"
+	case "accepted":
+		return next == "settled" || next == "rejected" || next == "reconciled"
+	case "settled", "rejected", "reconciled":
+		if next == "sending" || next == "accepted" {
+			return nextRun != currentRun || nextGen > currentGen
+		}
+		return next == currentDisposition
+	default:
+		return false
+	}
 }
 
 // LatestAttempt returns the newest generation for a run.

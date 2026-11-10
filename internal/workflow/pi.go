@@ -8,6 +8,8 @@ import (
 	"io"
 	"io/fs"
 	"log/slog"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/makez-dev/makez/internal/core"
@@ -73,17 +75,27 @@ func (a *Activities) openPiAttempt(ctx context.Context, t store.Task) (openedAtt
 	if err != nil {
 		return openedAttempt{}, err
 	}
-	attempt, err := a.DB.OpenAttempt(ctx, t.WorkspaceID, t.Run.ID, session.ID, piharness.PromptHash(t.Prompt))
+	hash := piharness.PromptHash(t.Prompt)
+	attempt, err := a.DB.OpenAttempt(ctx, t.WorkspaceID, t.Run.ID, session.ID, hash)
 	if errors.Is(err, store.ErrAttemptsExhausted) {
 		return openedAttempt{}, fail("ATTEMPT_EXHAUSTED", err)
 	}
 	if err != nil {
 		return openedAttempt{}, err
 	}
-	action := piharness.Decide(piharness.Disposition(session.Disposition), piharness.SameCommand(session.PromptSHA256, t.Prompt), piharness.HistoryUnread)
+	// The command row is the replay decision. The session's last disposition is only a cache.
+	own, err := a.DB.PromptDisposition(ctx, t.WorkspaceID, session.ID, hash)
+	if err != nil {
+		return openedAttempt{}, err
+	}
+	unknown, err := a.DB.HasUnknownPrompt(ctx, t.WorkspaceID, session.ID, hash)
+	if err != nil {
+		return openedAttempt{}, err
+	}
+	action := piharness.Decide(piharness.Disposition(own), own != "", piharness.HistoryUnread)
 	mode := piharness.Mode(action)
-	if action.ReadHistory && !piharness.SameCommand(session.PromptSHA256, t.Prompt) {
-		// A different prompt is sent only after this process has read history.
+	if unknown && action.SendPrompt {
+		// Another prompt is still sending or accepted. Read before sending this one, and do not clear that row.
 		mode = "reconcile_then_send"
 	}
 	return openedAttempt{Session: session, Attempt: attempt, Mode: mode}, nil
@@ -130,36 +142,40 @@ func (a *Activities) finishPiAttempt(ctx context.Context, t store.Task, exit *co
 	if err != nil {
 		return err
 	}
-	if disposition == "" {
-		session, err := a.ensurePiSession(ctx, t)
-		if err != nil {
-			return err
-		}
-		disposition = session.Disposition
-		promptHash = session.PromptSHA256
-	}
-	if disposition == "" {
-		disposition = string(piharness.DispositionNone)
+	session, err := a.ensurePiSession(ctx, t)
+	if err != nil {
+		return err
 	}
 	if promptHash == "" {
 		promptHash = piharness.PromptHash(t.Prompt)
 	}
-	latest, err := a.DB.LatestAttempt(ctx, t.WorkspaceID, t.Run.ID)
-	if err != nil {
-		return err
+	if disposition == "" {
+		disposition, err = a.DB.PromptDisposition(ctx, t.WorkspaceID, session.ID, promptHash)
+		if err != nil {
+			return err
+		}
 	}
+	if disposition == "" {
+		disposition = string(piharness.DispositionNone)
+	}
+	generation := piGeneration(t)
 	retry := piRetry(exit, disposition)
 	state := "closed"
 	if retry {
 		state = "lost"
 	}
-	if err = a.DB.SaveAttemptProgress(ctx, t.WorkspaceID, t.Run.ID, latest.SessionID, latest.Generation, disposition, promptHash, state); err != nil {
+	err = a.DB.SaveAttemptProgress(ctx, t.WorkspaceID, t.Run.ID, session.ID, generation, disposition, promptHash, state)
+	if errors.Is(err, store.ErrStaleWriter) {
+		// A newer attempt or another run owns the session. Do not relaunch this prompt.
+		return nil
+	}
+	if err != nil {
 		return err
 	}
 	if !retry {
 		return nil
 	}
-	if latest.Generation >= piharness.MaxAttempts {
+	if generation >= piharness.MaxAttempts {
 		return fail("ATTEMPT_EXHAUSTED", nil)
 	}
 	return fail("ATTEMPT_LOST", nil)
@@ -216,26 +232,44 @@ func (a *Activities) capturePiSession(ctx context.Context, t store.Task) error {
 	if t.AgentID != piharness.AdapterID || t.Run == nil || t.Run.Sandbox == nil {
 		return nil
 	}
+	if err := a.renewPiSession(ctx, t); err != nil {
+		if errors.Is(err, store.ErrSessionBusy) {
+			slog.WarnContext(ctx, "skipped pi session capture because another run holds the writer lease")
+			return nil
+		}
+		return err
+	}
 	disposition, promptHash, err := a.readPiDisposition(ctx, t)
 	if err != nil {
 		return err
 	}
-	latest, err := a.DB.LatestAttempt(ctx, t.WorkspaceID, t.Run.ID)
+	_, err = a.DB.LatestAttempt(ctx, t.WorkspaceID, t.Run.ID)
 	if errors.Is(err, store.ErrNotFound) {
 		return nil
 	}
 	if err != nil {
 		return err
 	}
-	if disposition == "" {
-		disposition = latest.Disposition
-		promptHash = latest.PromptSHA256
+	session, err := a.ensurePiSession(ctx, t)
+	if err != nil {
+		return err
 	}
 	if promptHash == "" {
-		promptHash = latest.PromptSHA256
+		promptHash = piharness.PromptHash(t.Prompt)
+	}
+	if disposition == "" {
+		disposition, err = a.DB.PromptDisposition(ctx, t.WorkspaceID, session.ID, promptHash)
+		if err != nil {
+			return err
+		}
 	}
 	if disposition != "" && promptHash != "" {
-		if err = a.DB.SaveAttemptProgress(ctx, t.WorkspaceID, t.Run.ID, latest.SessionID, latest.Generation, disposition, promptHash, "closed"); err != nil {
+		err = a.DB.SaveAttemptProgress(ctx, t.WorkspaceID, t.Run.ID, session.ID, piGeneration(t), disposition, promptHash, "closed")
+		if errors.Is(err, store.ErrStaleWriter) {
+			slog.WarnContext(ctx, "skipped stale pi session write")
+			return nil
+		}
+		if err != nil {
 			return err
 		}
 	}
@@ -255,7 +289,101 @@ func (a *Activities) capturePiSession(ctx context.Context, t store.Task) error {
 		slog.WarnContext(ctx, "pi checkpoint was not stored", "bytes", len(data))
 		return nil
 	}
-	return a.DB.SaveCheckpoint(ctx, t.WorkspaceID, latest.SessionID, data)
+	err = a.DB.SaveCheckpoint(ctx, t.WorkspaceID, session.ID, t.Run.ID, data)
+	if errors.Is(err, store.ErrStaleWriter) {
+		slog.WarnContext(ctx, "skipped stale pi checkpoint write")
+		return nil
+	}
+	return err
+}
+
+func (a *Activities) renewPiSession(ctx context.Context, t store.Task) error {
+	if t.AgentID != piharness.AdapterID || t.Run == nil {
+		return nil
+	}
+	session, err := a.ensurePiSession(ctx, t)
+	if err != nil {
+		return err
+	}
+	return a.DB.AcquireSessionWriter(ctx, t.WorkspaceID, session.ID, t.Run.ID)
+}
+
+func (a *Activities) releasePiSession(ctx context.Context, t store.Task) error {
+	if t.AgentID != piharness.AdapterID || t.Run == nil {
+		return nil
+	}
+	session, err := a.ensurePiSession(ctx, t)
+	if err != nil {
+		return err
+	}
+	return a.DB.ReleaseSessionWriter(ctx, t.WorkspaceID, session.ID, t.Run.ID)
+}
+
+func (a *Activities) trackPiSession(ctx context.Context, t store.Task) error {
+	err := a.renewPiSession(ctx, t)
+	if errors.Is(err, store.ErrSessionBusy) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	return a.persistPiDisposition(ctx, t)
+}
+
+func (a *Activities) persistRunningPi(ctx context.Context, t store.Task) error {
+	disposition, _, err := a.readPiDisposition(ctx, t)
+	if err != nil {
+		return err
+	}
+	if disposition == "" || disposition == string(piharness.DispositionNone) {
+		err = a.renewPiSession(ctx, t)
+		if errors.Is(err, store.ErrSessionBusy) {
+			return nil
+		}
+		return err
+	}
+	if err = a.renewPiSession(ctx, t); err != nil {
+		return err
+	}
+	return a.persistPiDisposition(ctx, t)
+}
+
+func (a *Activities) persistPiDisposition(ctx context.Context, t store.Task) error {
+	disposition, promptHash, err := a.readPiDisposition(ctx, t)
+	if err != nil {
+		return err
+	}
+	if disposition == "" || disposition == string(piharness.DispositionNone) || promptHash == "" || t.Run == nil {
+		return nil
+	}
+	session, err := a.ensurePiSession(ctx, t)
+	if err != nil {
+		return err
+	}
+	err = a.DB.SaveAttemptProgress(ctx, t.WorkspaceID, t.Run.ID, session.ID, piGeneration(t), disposition, promptHash, "")
+	if errors.Is(err, store.ErrStaleWriter) {
+		return nil
+	}
+	return err
+}
+
+func piGeneration(t store.Task) int64 {
+	step := "agent"
+	if t.Run != nil && t.Run.Process != nil && t.Run.Process.Key.Step != "" {
+		step = t.Run.Process.Key.Step
+	}
+	if step == "agent" {
+		return 1
+	}
+	rest, ok := strings.CutPrefix(step, "agent:")
+	if !ok {
+		return 1
+	}
+	n, err := strconv.ParseInt(rest, 10, 64)
+	if err != nil || n < 1 || n > int64(piharness.MaxAttempts) {
+		return 1
+	}
+	return n
 }
 
 func processKey(t store.Task) core.OperationKey {

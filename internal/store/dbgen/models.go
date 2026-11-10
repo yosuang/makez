@@ -120,6 +120,17 @@ type MakezMembership struct {
 	UpdatedAt   pgtype.Timestamptz
 }
 
+type MakezNativeCommand struct {
+	SessionID    string
+	PromptSha256 string
+	WorkspaceID  string
+	RunID        string
+	Generation   int64
+	Disposition  string
+	CreatedAt    pgtype.Timestamptz
+	UpdatedAt    pgtype.Timestamptz
+}
+
 type MakezNativeSession struct {
 	ID               string
 	WorkspaceID      string
@@ -134,6 +145,9 @@ type MakezNativeSession struct {
 	Checkpoint       []byte
 	CreatedAt        pgtype.Timestamptz
 	UpdatedAt        pgtype.Timestamptz
+	WriterRunID      *string
+	WriterFence      int64
+	WriterUntil      pgtype.Timestamptz
 }
 
 type MakezOperation struct {

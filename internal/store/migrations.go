@@ -20,7 +20,7 @@ import (
 //go:embed migrations/*.sql
 var migrations embed.FS
 
-const schemaVersion = 7
+const schemaVersion = 8
 const versionTable = "makez_goose_version"
 
 // Migrate is the explicit migration entry point for isolated test databases.
