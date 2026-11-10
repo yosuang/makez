@@ -22,3 +22,33 @@ jobs:
       - run: mise run fmt-check
       - run: mise run sqlc-check
       - run: mise run swagger-check
+
+  # mise run test-pg is the integration target. This job gives it PostgreSQL 17.11,
+  # the same major image as deploy/docker-compose.infra.yaml, and fails if the
+  # database tests skip. TestBrowserSessionJourney still skips: it needs
+  # MAKEZ_BROWSER_TEST=1 and Chromium, which this job does not install.
+  postgres:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:17.11
+        env:
+          POSTGRES_USER: makez
+          POSTGRES_PASSWORD: makez-local
+          POSTGRES_DB: makez
+        ports:
+          - 55432:5432
+        options: >-
+          --health-cmd "pg_isready -U makez -d makez"
+          --health-interval 2s
+          --health-timeout 3s
+          --health-retries 30
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: jdx/mise-action@v5
+      - run: mise run test-pg
+        env:
+          MAKEZ_TEST_DATABASE_URL: postgres://makez:makez-local@127.0.0.1:55432/makez?sslmode=disable
