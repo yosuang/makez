@@ -101,6 +101,16 @@ func (a *Activities) openPiAttempt(ctx context.Context, t store.Task) (openedAtt
 	return openedAttempt{Session: session, Attempt: attempt, Mode: mode}, nil
 }
 
+// markPromptSending commits sending before Provider.Start when this attempt will send.
+// A crash after the runner flushes, and before that file is copied, still leaves this row.
+// The next writer then refuses the same prompt. A read-only recovery does not write sending.
+func (a *Activities) markPromptSending(ctx context.Context, t store.Task, opened openedAttempt) error {
+	if opened.Mode != "send" && opened.Mode != "reconcile_then_send" {
+		return nil
+	}
+	return a.DB.SaveAttemptProgress(ctx, t.WorkspaceID, t.Run.ID, opened.Session.ID, opened.Attempt.Generation, string(piharness.DispositionSending), piharness.PromptHash(t.Prompt), "")
+}
+
 func (a *Activities) writePiInstruction(ctx context.Context, t store.Task, opened openedAttempt) error {
 	adapter, err := a.adapter(t)
 	if err != nil {

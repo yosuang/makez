@@ -255,6 +255,12 @@ func (a *Activities) launchPi(ctx context.Context, in Input) error {
 		return err
 	}
 	step := opened.Attempt.Step
+	// Commit the command row before this process can flush sending or accepted.
+	// The sandbox file is not visible to another task. Keep the mode chosen
+	// above: reading the new row would turn this first send into a read.
+	if err = a.markPromptSending(ctx, t, opened); err != nil {
+		return err
+	}
 	if t.Run.Process != nil && t.Run.Process.Key.Step == step && t.Run.Exit == nil {
 		return a.persistRunningPi(ctx, t)
 	}
