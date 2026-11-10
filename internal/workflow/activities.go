@@ -453,7 +453,7 @@ func (a *Activities) Finalize(ctx context.Context, in FinishInput) error {
 		stopErr := a.Provider.Stop(stopCtx, *t.Run.Sandbox, processKey(t), policy)
 		cancel()
 		verified = stopErr == nil
-		// Read the session file after stop so a shutdown flush is visible, and before any delete.
+		// Copy a session file only when Pi left one. A missing file is not a resumed session.
 		if e = a.capturePiSession(ctx, t); e != nil {
 			return e
 		}

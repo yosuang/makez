@@ -11,6 +11,8 @@ import time
 
 MAX_CHECKPOINT = 1 << 20
 IMPORTANT = {"response", "agent_settled"}
+# RPC bash runs even when --no-tools is set. Only these commands are written.
+ALLOWED_COMMANDS = {"prompt", "get_messages", "clear_queue", "abort"}
 
 
 def fail(message):
@@ -64,13 +66,19 @@ def absolute_path(value):
     return ".." not in parts
 
 
-def child_env(inst):
+def child_env(inst, include_secret):
     allowed = {}
-    for key in ("PATH", "HOME", "LANG"):
-        if key in os.environ:
-            allowed[key] = os.environ[key]
+    for key in ("PATH", "HOME"):
+        value = os.environ.get(key)
+        if not value:
+            raise ValueError("Pi environment is missing " + key)
+        allowed[key] = value
+    if "LANG" in os.environ:
+        allowed["LANG"] = os.environ["LANG"]
     if inst["offline"]:
         allowed["PI_OFFLINE"] = "1"
+    if not include_secret:
+        return allowed
     for key in inst["forward_env"]:
         if key in ("PATH", "HOME", "LANG", "PI_OFFLINE") or not isinstance(key, str) or key.startswith("MAKEZ_"):
             raise ValueError("forwarded environment name is reserved")
@@ -210,8 +218,8 @@ class Session:
             self.ready.notify_all()
 
     def command(self, body, seconds, interruptible=True):
-        if body.get("type") in ("bash", "abort_bash"):
-            raise RuntimeError("Pi bash is not sent")
+        if body.get("type") not in ALLOWED_COMMANDS:
+            raise RuntimeError("Pi command is not allowed")
         self.next_id += 1
         command_id = "m%d" % self.next_id
         payload = dict(body)
@@ -260,9 +268,13 @@ def messages_of(response):
 
 
 def cancel_run(session, inst):
-    session.command({"type": "clear_queue"}, 5, False)
-    session.command({"type": "abort"}, 5, False)
-    write_result(inst["result_path"], False, "Canceled after clear_queue and abort.")
+    # abort continues a queue that clear_queue did not remove.
+    cleared = session.command({"type": "clear_queue"}, 5, False)
+    if cleared and cleared.get("success"):
+        session.command({"type": "abort"}, 5, False)
+        write_result(inst["result_path"], False, "Canceled after clear_queue and abort.")
+        return 0
+    write_result(inst["result_path"], False, "Canceled without abort because the queue was not cleared.")
     return 0
 
 
@@ -327,9 +339,9 @@ def send_prompt(session, inst, digest):
 
 
 def run(inst):
-    env = child_env(inst)
+    # The version process does not receive the task secret.
     try:
-        version = subprocess.check_output([inst["binary"], "--version"], env=env, timeout=15)
+        version = subprocess.check_output([inst["binary"], "--version"], env=child_env(inst, False), timeout=15)
     except (OSError, subprocess.SubprocessError):
         write_result(inst["result_path"], False, "Pi version command failed.")
         return 1
@@ -342,7 +354,7 @@ def run(inst):
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
-        env=env,
+        env=child_env(inst, True),
     )
     session = Session(proc)
     signal.signal(signal.SIGTERM, lambda _signum, _frame: session.stop.set())
@@ -356,8 +368,9 @@ def run(inst):
             if not read_history(session, inst):
                 write_result(inst["result_path"], False, "Native history could not be read; the prompt was not sent.")
                 return 75
+            # An empty read is not a restored session file. It still must not resend.
             write_disposition(inst["disposition_path"], "reconciled", digest)
-            write_result(inst["result_path"], False, "Reconciled native history and did not send the prompt again.")
+            write_result(inst["result_path"], False, "Read native history and did not send the prompt again.")
             return 0
         if inst["mode"] == "reconcile_then_send" and not read_history(session, inst):
             write_result(inst["result_path"], False, "Native history could not be read; the prompt was not sent.")

@@ -75,6 +75,91 @@ func TestRunnerRejectsAPromptWithoutCallingItSettled(t *testing.T) {
 	}
 }
 
+func TestRunnerDoesNotAbortWhenClearQueueFails(t *testing.T) {
+	dir := t.TempDir()
+	binary := fakePi(t, dir, fakeOptions{version: PackageVersion, failClear: true})
+	instruction := instructionAt(t, dir, binary, Instruction{Mode: "send", SettleSeconds: 10})
+	cmd := exec.Command("python3", filepath.Join(dir, "run.py"), instruction)
+	cmd.Env = runnerEnv(dir)
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, filepath.Join(dir, "disposition.json"), `"disposition":"accepted"`)
+	if err := cmd.Process.Signal(syscall.SIGTERM); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- cmd.Wait() }()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(8 * time.Second):
+		_ = cmd.Process.Kill()
+		t.Fatal("runner did not exit after a failed clear_queue")
+	}
+	log := readFile(t, filepath.Join(dir, "pi.log"))
+	if !strings.Contains(log, "clear_queue") || strings.Contains(log, "abort") {
+		t.Fatalf("log = %s", log)
+	}
+	raw := readFile(t, filepath.Join(dir, "disposition.json"))
+	if !strings.Contains(raw, `"disposition":"accepted"`) {
+		t.Fatalf("disposition = %s", raw)
+	}
+}
+
+func TestRunnerVersionCheckDoesNotReceiveTheSecret(t *testing.T) {
+	dir := t.TempDir()
+	binary := fakePi(t, dir, fakeOptions{version: PackageVersion})
+	code, _ := runRunner(t, dir, binary, Instruction{Mode: "reconcile_only", ForwardEnv: []string{"PI_API_KEY"}}, []string{"PI_API_KEY=secret-value"})
+	if code != 0 {
+		t.Fatal(code)
+	}
+	versionEnv := readFile(t, filepath.Join(dir, "pi.env.version"))
+	if strings.Contains(versionEnv, "PI_API_KEY") || strings.Contains(versionEnv, "secret-value") {
+		t.Fatalf("version env = %s", versionEnv)
+	}
+	if !strings.Contains(readFile(t, filepath.Join(dir, "pi.env")), "PI_API_KEY") {
+		t.Fatal("RPC process did not receive the named secret")
+	}
+}
+
+func TestRunnerRefusesAMissingHomeAndABashCommand(t *testing.T) {
+	dir := t.TempDir()
+	binary := fakePi(t, dir, fakeOptions{version: PackageVersion})
+	instruction := instructionAt(t, dir, binary, Instruction{Mode: "send"})
+	cmd := exec.Command("python3", filepath.Join(dir, "run.py"), instruction)
+	cmd.Env = []string{"PATH=" + os.Getenv("PATH"), "LANG=C.UTF-8"}
+	err := cmd.Run()
+	var exit *exec.ExitError
+	if !errors.As(err, &exit) || exit.ExitCode() == 0 {
+		t.Fatalf("missing HOME exit = %v", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(dir, "pi.argv")); !os.IsNotExist(statErr) {
+		t.Fatal("missing HOME started RPC")
+	}
+	script := filepath.Join(dir, "run.py")
+	check := exec.Command("python3", "-c", `
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("pi_run", sys.argv[1])
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+class Proc:
+    pass
+try:
+    mod.Session(Proc()).command({"type": "bash", "command": "id"}, 1)
+except RuntimeError as exc:
+    if "not allowed" not in str(exc):
+        raise
+    sys.exit(0)
+sys.exit(1)
+`, script)
+	if err = check.Run(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestRunnerClearQueuePrecedesAbort(t *testing.T) {
 	dir := t.TempDir()
 	binary := fakePi(t, dir, fakeOptions{version: PackageVersion})
@@ -145,9 +230,10 @@ type resultFile struct {
 }
 
 type fakeOptions struct {
-	version string
-	reject  bool
-	settle  bool
+	version   string
+	reject    bool
+	settle    bool
+	failClear bool
 }
 
 func fakePi(t *testing.T, dir string, opts fakeOptions) string {
@@ -163,7 +249,9 @@ func fakePi(t *testing.T, dir string, opts fakeOptions) string {
 		"VERSION = " + quote(opts.version) + "\n" +
 		"REJECT = " + boolPython(opts.reject) + "\n" +
 		"SETTLE = " + boolPython(opts.settle) + "\n" +
+		"FAIL_CLEAR = " + boolPython(opts.failClear) + "\n" +
 		`if "--version" in sys.argv:
+    open(ENV + ".version", "w").write(json.dumps(sorted(os.environ)))
     print(VERSION)
     raise SystemExit(0)
 open(ARGV, "w").write(json.dumps(sys.argv))
@@ -184,7 +272,7 @@ for line in sys.stdin:
     elif kind == "get_messages":
         print(json.dumps({"id": cmd["id"], "type": "response", "command": "get_messages", "success": True, "data": {"messages": []}}), flush=True)
     elif kind == "clear_queue":
-        print(json.dumps({"id": cmd["id"], "type": "response", "command": "clear_queue", "success": True, "data": {"steering": [], "followUp": []}}), flush=True)
+        print(json.dumps({"id": cmd["id"], "type": "response", "command": "clear_queue", "success": not FAIL_CLEAR, "data": {"steering": [], "followUp": []}}), flush=True)
     elif kind == "abort":
         print(json.dumps({"id": cmd["id"], "type": "response", "command": "abort", "success": True}), flush=True)
         print(json.dumps({"type": "agent_settled"}), flush=True)
