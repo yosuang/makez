@@ -320,15 +320,20 @@ def wait_for_release(session, inst):
     return not session.stop.is_set()
 
 
+def lost_before_release(inst):
+    # The prompt bytes were not written. Exit 0 would close the sending row, and
+    # the workflow would not launch this prompt again.
+    write_result(inst["result_path"], False, "Canceled before the prompt was sent.")
+    return 75
+
+
 def send_prompt(session, inst, digest):
     if session.stop.is_set():
-        write_result(inst["result_path"], False, "Canceled before the prompt was sent.")
-        return 0
+        return lost_before_release(inst)
     # The process can be running while the prompt is still unsent. Prompt bytes
     # wait until Makez has recorded that this process started.
     if not wait_for_release(session, inst):
-        write_result(inst["result_path"], False, "Canceled before the prompt was sent.")
-        return 0
+        return lost_before_release(inst)
     # Durable "sending" is written and flushed before any prompt byte reaches Pi.
     write_disposition(inst["disposition_path"], "sending", digest)
     if session.stop.is_set():

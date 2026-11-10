@@ -77,6 +77,77 @@ func TestRunnerWaitsToSendUntilRelease(t *testing.T) {
 	}
 }
 
+// TestRunnerLostBeforeRelease is the child dying, or stop arriving, before the release file.
+// Exit 0 would close the sending row. The workflow relaunches exit 75.
+func TestRunnerLostBeforeRelease(t *testing.T) {
+	t.Run("ChildDies", func(t *testing.T) {
+		dir := t.TempDir()
+		binary := fakePi(t, dir, fakeOptions{version: PackageVersion, exitBeforeRPC: 7})
+		code, result := runRunner(t, dir, binary, Instruction{Mode: "send", ReleasePath: filepath.Join(dir, "release")}, nil)
+		requireLostBeforeRelease(t, dir, code, result)
+	})
+	t.Run("Stop", func(t *testing.T) {
+		dir := t.TempDir()
+		binary := fakePi(t, dir, fakeOptions{version: PackageVersion})
+		release := filepath.Join(dir, "release")
+		instruction := instructionAt(t, dir, binary, Instruction{Mode: "send", ReleasePath: release})
+		cmd := exec.Command("python3", filepath.Join(dir, "run.py"), instruction)
+		cmd.Env = runnerEnv(dir)
+		if err := cmd.Start(); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() {
+			if cmd.Process != nil {
+				_ = cmd.Process.Kill()
+			}
+		})
+		waitFor(t, filepath.Join(dir, "pi.argv"), "--mode")
+		time.Sleep(200 * time.Millisecond)
+		if err := cmd.Process.Signal(syscall.SIGTERM); err != nil {
+			t.Fatal(err)
+		}
+		done := make(chan error, 1)
+		go func() { done <- cmd.Wait() }()
+		var err error
+		select {
+		case err = <-done:
+		case <-time.After(8 * time.Second):
+			t.Fatal("runner did not exit after stop")
+		}
+		code := 0
+		var exit *exec.ExitError
+		if err != nil && !errors.As(err, &exit) {
+			t.Fatal(err)
+		}
+		if exit != nil {
+			code = exit.ExitCode()
+		}
+		raw, readErr := os.ReadFile(filepath.Join(dir, "result.json"))
+		if readErr != nil {
+			t.Fatal(readErr)
+		}
+		var result resultFile
+		if json.Unmarshal(raw, &result) != nil || result.Summary == "" {
+			t.Fatalf("result %s", raw)
+		}
+		requireLostBeforeRelease(t, dir, code, result)
+	})
+}
+
+func requireLostBeforeRelease(t *testing.T, dir string, code int, result resultFile) {
+	t.Helper()
+	if code != 75 || result.Succeeded || !strings.Contains(result.Summary, "Canceled before the prompt was sent.") {
+		t.Fatalf("exit %d result %#v", code, result)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "disposition.json")); !os.IsNotExist(err) {
+		t.Fatal("disposition file exists")
+	}
+	log, err := os.ReadFile(filepath.Join(dir, "pi.log"))
+	if err == nil && strings.Contains(string(log), "prompt") {
+		t.Fatalf("prompt was sent:\n%s", log)
+	}
+}
+
 func TestRunnerStopAfterFlushRemovesTheUnsentFile(t *testing.T) {
 	dir := t.TempDir()
 	script := filepath.Join(dir, "run.py")
@@ -311,10 +382,11 @@ type resultFile struct {
 }
 
 type fakeOptions struct {
-	version   string
-	reject    bool
-	settle    bool
-	failClear bool
+	version       string
+	reject        bool
+	settle        bool
+	failClear     bool
+	exitBeforeRPC int
 }
 
 func fakePi(t *testing.T, dir string, opts fakeOptions) string {
@@ -331,10 +403,13 @@ func fakePi(t *testing.T, dir string, opts fakeOptions) string {
 		"REJECT = " + boolPython(opts.reject) + "\n" +
 		"SETTLE = " + boolPython(opts.settle) + "\n" +
 		"FAIL_CLEAR = " + boolPython(opts.failClear) + "\n" +
+		"EXIT_BEFORE_RPC = " + strconv.Itoa(opts.exitBeforeRPC) + "\n" +
 		`if "--version" in sys.argv:
     open(ENV + ".version", "w").write(json.dumps(sorted(os.environ)))
     print(VERSION)
     raise SystemExit(0)
+if EXIT_BEFORE_RPC:
+    raise SystemExit(EXIT_BEFORE_RPC)
 open(ARGV, "w").write(json.dumps(sys.argv))
 open(ENV, "w").write(json.dumps(sorted(os.environ)))
 for line in sys.stdin:

@@ -386,6 +386,8 @@ type sendingGate struct {
 	unreadable         string
 	files              map[string][]byte
 	releases           []string
+	lostCode           int
+	polls              int
 }
 
 func (g *sendingGate) BackendID() string { return "test" }
@@ -417,7 +419,15 @@ func (g *sendingGate) Start(ctx context.Context, sandbox core.SandboxRef, reques
 	return core.ProcessRef{Sandbox: sandbox, ID: "proc-" + request.Key.Step, Key: request.Key}, nil
 }
 func (g *sendingGate) Process(context.Context, core.SandboxRef, core.OperationKey) (core.ProcessObservation, error) {
-	return core.ProcessObservation{}, nil
+	if g.lostCode == 0 {
+		return core.ProcessObservation{}, nil
+	}
+	g.polls++
+	code := 0
+	if g.polls == 1 {
+		code = g.lostCode
+	}
+	return core.ProcessObservation{State: core.ProcessExited, Exit: &core.ProcessExit{Code: code}}, nil
 }
 func (g *sendingGate) Output(context.Context, core.ProcessRef, string, int) (core.OutputPage, error) {
 	return core.OutputPage{}, nil
