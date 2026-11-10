@@ -18,6 +18,7 @@ type Instruction struct {
 	DispositionPath   string   `json:"disposition_path"`
 	HistoryPath       string   `json:"history_path"`
 	ResultPath        string   `json:"result_path"`
+	ReleasePath       string   `json:"release_path,omitempty"`
 	ForwardEnv        []string `json:"forward_env"`
 	Offline           bool     `json:"offline"`
 	PackageVersion    string   `json:"package_version"`
@@ -34,6 +35,9 @@ func BuildInstruction(in Instruction) ([]byte, error) {
 		if !absolute(candidate) {
 			return nil, fmt.Errorf("runner path must be absolute")
 		}
+	}
+	if in.ReleasePath != "" && !absolute(in.ReleasePath) {
+		return nil, fmt.Errorf("runner path must be absolute")
 	}
 	if in.PackageVersion != PackageVersion {
 		return nil, fmt.Errorf("runner package version does not match the pin")

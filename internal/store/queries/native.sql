@@ -85,7 +85,7 @@ SET writer_run_id = NULL, writer_until = NULL, updated_at = now()
 WHERE id = $1 AND workspace_id = $2 AND writer_run_id = $3;
 
 -- name: GetNativeCommand :one
-SELECT c.disposition, c.run_id, c.generation
+SELECT c.disposition, c.run_id, c.generation, c.started
 FROM makez_native_commands c
 JOIN makez_native_sessions s ON s.id = c.session_id
 WHERE c.session_id = $1 AND s.workspace_id = $2 AND c.prompt_sha256 = $3;
@@ -98,16 +98,27 @@ SELECT EXISTS (
   WHERE c.session_id = $1
     AND s.workspace_id = $2
     AND c.prompt_sha256 <> $3
-    AND c.disposition IN ('sending', 'accepted')
+    AND (c.disposition = 'accepted' OR (c.disposition = 'sending' AND c.started))
 ) AS unknown;
 
 -- name: UpsertNativeCommand :exec
 INSERT INTO makez_native_commands (
-  session_id, prompt_sha256, disposition, workspace_id, run_id, generation
-) VALUES ($1, $2, $3, $4, $5, $6)
+  session_id, prompt_sha256, disposition, workspace_id, run_id, generation, started
+) VALUES ($1, $2, $3, $4, $5, $6, $7)
 ON CONFLICT (session_id, prompt_sha256) DO UPDATE
 SET disposition = EXCLUDED.disposition,
     workspace_id = EXCLUDED.workspace_id,
     run_id = EXCLUDED.run_id,
     generation = EXCLUDED.generation,
+    -- A repeated sending write by the same run must not clear a start that already happened.
+    started = CASE
+      WHEN makez_native_commands.started AND makez_native_commands.run_id = EXCLUDED.run_id THEN true
+      ELSE EXCLUDED.started
+    END,
     updated_at = now();
+
+-- name: MarkNativeCommandStarted :execrows
+UPDATE makez_native_commands
+SET started = true, updated_at = now()
+WHERE session_id = $1 AND prompt_sha256 = $2 AND workspace_id = $3
+  AND run_id = $4 AND generation = $5 AND disposition = 'sending';

@@ -26,6 +26,7 @@ type openedAttempt struct {
 	Session store.NativeSession
 	Attempt store.Attempt
 	Mode    string
+	Prompt  store.NativePrompt
 }
 
 func (a *Activities) preparePi(ctx context.Context, t store.Task) error {
@@ -84,7 +85,7 @@ func (a *Activities) openPiAttempt(ctx context.Context, t store.Task) (openedAtt
 		return openedAttempt{}, err
 	}
 	// The command row is the replay decision. The session's last disposition is only a cache.
-	own, err := a.DB.PromptDisposition(ctx, t.WorkspaceID, session.ID, hash)
+	own, err := a.DB.NativePrompt(ctx, t.WorkspaceID, session.ID, hash)
 	if err != nil {
 		return openedAttempt{}, err
 	}
@@ -92,18 +93,18 @@ func (a *Activities) openPiAttempt(ctx context.Context, t store.Task) (openedAtt
 	if err != nil {
 		return openedAttempt{}, err
 	}
-	action := piharness.Decide(piharness.Disposition(own), own != "", piharness.HistoryUnread)
+	action := piharness.Deliver(piharness.Disposition(own.Disposition), own.Found, piharness.HistoryUnread, own.Started)
 	mode := piharness.Mode(action)
 	if unknown && action.SendPrompt {
-		// Another prompt is still sending or accepted. Read before sending this one, and do not clear that row.
+		// Another prompt is still in a process. Read before sending this one, and do not clear that row.
 		mode = "reconcile_then_send"
 	}
-	return openedAttempt{Session: session, Attempt: attempt, Mode: mode}, nil
+	return openedAttempt{Session: session, Attempt: attempt, Mode: mode, Prompt: own}, nil
 }
 
-// markPromptSending commits sending before Provider.Start when this attempt will send.
-// A crash after the runner flushes, and before that file is copied, still leaves this row.
-// The next writer then refuses the same prompt. A read-only recovery does not write sending.
+// markPromptSending commits the command row before Provider.Start when this attempt will send.
+// started stays false until the process exists. A crash before that still sends the prompt once.
+// The mode chosen above is kept: reading the new row would turn this first send into a read.
 func (a *Activities) markPromptSending(ctx context.Context, t store.Task, opened openedAttempt) error {
 	if opened.Mode != "send" && opened.Mode != "reconcile_then_send" {
 		return nil
@@ -128,11 +129,15 @@ func (a *Activities) writePiInstruction(ctx context.Context, t store.Task, opene
 	if seconds > 5400 {
 		seconds = 5400
 	}
+	release := ""
+	if opened.Mode == "send" || opened.Mode == "reconcile_then_send" {
+		release = piharness.ReleasePath
+	}
 	body, err := piharness.BuildInstruction(piharness.Instruction{
 		Binary: binary, Prompt: t.Prompt, Mode: opened.Mode, SessionDir: piharness.SessionDir,
 		Checkpoint: piharness.CheckpointPath, DispositionPath: piharness.DispositionPath,
-		HistoryPath: piharness.HistoryPath, ResultPath: piharness.ResultPath, ForwardEnv: forward,
-		Offline: offline, PackageVersion: piharness.PackageVersion, SettleSeconds: seconds,
+		HistoryPath: piharness.HistoryPath, ResultPath: piharness.ResultPath, ReleasePath: release,
+		ForwardEnv: forward, Offline: offline, PackageVersion: piharness.PackageVersion, SettleSeconds: seconds,
 		RestoreCheckpoint: opened.Session.CheckpointBytes > 0,
 	})
 	if err != nil {
@@ -142,6 +147,42 @@ func (a *Activities) writePiInstruction(ctx context.Context, t store.Task, opene
 		return fail("RESOURCE_LOST", nil)
 	}
 	if err = a.Provider.WriteFile(ctx, *t.Run.Sandbox, piharness.InstructionPath, bytes.NewReader(body), int64(len(body))); err != nil {
+		return convert(err)
+	}
+	return nil
+}
+
+// finishPromptDelivery marks the prompt started and then lets the runner write it.
+// The mark is committed only after a process ref exists. The release file is second,
+// so a crash before the process exists leaves the prompt sendable.
+func (a *Activities) finishPromptDelivery(ctx context.Context, t store.Task) error {
+	if t.AgentID != piharness.AdapterID || t.Run == nil || t.Run.Process == nil || t.Run.Sandbox == nil {
+		return nil
+	}
+	session, err := a.ensurePiSession(ctx, t)
+	if err != nil {
+		return err
+	}
+	hash := piharness.PromptHash(t.Prompt)
+	prompt, err := a.DB.NativePrompt(ctx, t.WorkspaceID, session.ID, hash)
+	if err != nil {
+		return err
+	}
+	if !prompt.Found || prompt.Disposition != string(piharness.DispositionSending) || prompt.RunID != t.Run.ID {
+		return nil
+	}
+	if !prompt.Started {
+		err = a.DB.MarkPromptStarted(ctx, t.WorkspaceID, t.Run.ID, session.ID, piGeneration(t), hash)
+		if err != nil {
+			return err
+		}
+	}
+	return a.writePiRelease(ctx, t)
+}
+
+func (a *Activities) writePiRelease(ctx context.Context, t store.Task) error {
+	body := []byte("1\n")
+	if err := a.Provider.WriteFile(ctx, *t.Run.Sandbox, piharness.ReleasePath, bytes.NewReader(body), int64(len(body))); err != nil {
 		return convert(err)
 	}
 	return nil

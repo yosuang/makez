@@ -224,21 +224,66 @@ func (s *Store) ReleaseSessionWriter(ctx context.Context, workspace, sessionID, 
 	})
 }
 
+// NativePrompt is one prompt's command row. Started is true only after its process exists.
+type NativePrompt struct {
+	Disposition string
+	Started     bool
+	RunID       string
+	Generation  int64
+	Found       bool
+}
+
 // PromptDisposition returns the command row for this prompt. An unknown prompt is an empty string.
 func (s *Store) PromptDisposition(ctx context.Context, workspace, sessionID, promptHash string) (string, error) {
+	row, err := s.NativePrompt(ctx, workspace, sessionID, promptHash)
+	if err != nil || !row.Found {
+		return "", err
+	}
+	return row.Disposition, nil
+}
+
+// NativePrompt returns the command row. A missing row has Found false.
+func (s *Store) NativePrompt(ctx context.Context, workspace, sessionID, promptHash string) (NativePrompt, error) {
 	if sessionID == "" || !sha256Hex.MatchString(promptHash) {
-		return "", ErrInvalidInput
+		return NativePrompt{}, ErrInvalidInput
 	}
 	row, err := dbgen.New(s.pool).GetNativeCommand(ctx, dbgen.GetNativeCommandParams{
 		SessionID: sessionID, WorkspaceID: workspace, PromptSha256: promptHash,
 	})
 	if errors.Is(err, pgx.ErrNoRows) {
-		return "", nil
+		return NativePrompt{}, nil
 	}
 	if err != nil {
-		return "", err
+		return NativePrompt{}, err
 	}
-	return row.Disposition, nil
+	return NativePrompt{Disposition: row.Disposition, Started: row.Started, RunID: row.RunID, Generation: row.Generation, Found: true}, nil
+}
+
+// MarkPromptStarted records that this run's process exists for a sending prompt.
+// The runner must not write the prompt before this commit. A repeat by the same run is a no-op.
+func (s *Store) MarkPromptStarted(ctx context.Context, workspace, runID, sessionID string, generation int64, promptHash string) error {
+	if sessionID == "" || runID == "" || !sha256Hex.MatchString(promptHash) || generation < 1 {
+		return ErrInvalidInput
+	}
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck // Commit closes the transaction; pgx discards the connection on rollback failure.
+	q := dbgen.New(tx)
+	if err = requireWriter(ctx, q, workspace, sessionID, runID); err != nil {
+		return err
+	}
+	rows, err := q.MarkNativeCommandStarted(ctx, dbgen.MarkNativeCommandStartedParams{
+		SessionID: sessionID, PromptSha256: promptHash, WorkspaceID: workspace, RunID: runID, Generation: generation,
+	})
+	if err != nil {
+		return err
+	}
+	if rows != 1 {
+		return ErrConflict
+	}
+	return tx.Commit(ctx)
 }
 
 // HasUnknownPrompt reports whether a different prompt is still sending or accepted.
@@ -296,15 +341,16 @@ func (s *Store) SaveAttemptProgress(ctx context.Context, workspace, runID, sessi
 	}
 	curDisp, curRun := "", ""
 	var curGen int64
+	curStarted := false
 	if hasRow {
-		curDisp, curRun, curGen = current.Disposition, current.RunID, current.Generation
+		curDisp, curRun, curGen, curStarted = current.Disposition, current.RunID, current.Generation, current.Started
 	}
-	if !allowCommand(hasRow, curDisp, disposition, curGen, generation, curRun, runID) {
+	if !allowCommand(hasRow, curDisp, disposition, curGen, generation, curRun, runID, curStarted) {
 		return commitAttemptState(ctx, tx, q, workspace, runID, generation, state)
 	}
 	if err = q.UpsertNativeCommand(ctx, dbgen.UpsertNativeCommandParams{
 		SessionID: sessionID, PromptSha256: promptHash, Disposition: disposition,
-		WorkspaceID: workspace, RunID: runID, Generation: generation,
+		WorkspaceID: workspace, RunID: runID, Generation: generation, Started: false,
 	}); err != nil {
 		return err
 	}
@@ -378,18 +424,22 @@ func commitAttemptState(ctx context.Context, tx pgx.Tx, q *dbgen.Queries, worksp
 }
 
 // allowCommand decides whether this write may change the prompt's command row.
-// sending and accepted stay put when a different run observes them.
-func allowCommand(hasRow bool, currentDisposition, next string, currentGen, nextGen int64, currentRun, nextRun string) bool {
+// sending and accepted stay put when a different run observes them, unless sending
+// was recorded before the process started. That prompt has not reached Pi.
+func allowCommand(hasRow bool, currentDisposition, next string, currentGen, nextGen int64, currentRun, nextRun string, started bool) bool {
 	if next == "" || next == "none" {
 		return false
 	}
 	if !hasRow {
 		return true
 	}
-	if currentRun != nextRun && (currentDisposition == "sending" || currentDisposition == "accepted") {
+	if nextGen < currentGen {
 		return false
 	}
-	if nextGen < currentGen {
+	if currentDisposition == "sending" && !started && next == "sending" {
+		return true
+	}
+	if currentRun != nextRun && (currentDisposition == "sending" || currentDisposition == "accepted") {
 		return false
 	}
 	if currentDisposition == next && currentRun == nextRun && currentGen == nextGen {

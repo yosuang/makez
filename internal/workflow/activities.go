@@ -255,13 +255,15 @@ func (a *Activities) launchPi(ctx context.Context, in Input) error {
 		return err
 	}
 	step := opened.Attempt.Step
-	// Commit the command row before this process can flush sending or accepted.
-	// The sandbox file is not visible to another task. Keep the mode chosen
-	// above: reading the new row would turn this first send into a read.
+	// Commit the command row before the process exists. started stays false, so a
+	// crash here still sends the prompt. Keep the mode chosen above.
 	if err = a.markPromptSending(ctx, t, opened); err != nil {
 		return err
 	}
 	if t.Run.Process != nil && t.Run.Process.Key.Step == step && t.Run.Exit == nil {
+		if err = a.finishPromptDelivery(ctx, t); err != nil {
+			return err
+		}
 		return a.persistRunningPi(ctx, t)
 	}
 	phase, err := a.DB.OperationPhase(ctx, t.Run.ID, step)
@@ -324,6 +326,23 @@ func (a *Activities) startAgentProcess(ctx context.Context, t store.Task, step s
 			}
 		}
 	}
+	if ref.ID == "" && !claimed && t.AgentID == piharness.AdapterID {
+		// BeginOperation can commit before Start. A receipt that guarantees no launch
+		// means the prompt never left, so this run starts it once.
+		observed, err := a.Provider.Process(ctx, *t.Run.Sandbox, key(t, step))
+		if err != nil {
+			return convert(err)
+		}
+		if observed.Ref == nil && observed.State == core.ProcessNotStarted {
+			ref, e = a.Provider.Start(ctx, *t.Run.Sandbox, req)
+			if e != nil {
+				var p core.ProviderError
+				if errors.As(e, &p) && p.Code() != core.OutcomeUnknown && p.Code() != core.Transient {
+					return convert(e)
+				}
+			}
+		}
+	}
 	if ref.ID == "" {
 		until := time.Now().Add(30 * time.Second)
 		for time.Now().Before(until) {
@@ -366,6 +385,9 @@ func (a *Activities) startAgentProcess(ctx context.Context, t store.Task, step s
 		return nil
 	}
 	t.Run.Process = &ref
+	if e = a.finishPromptDelivery(ctx, t); e != nil {
+		return e
+	}
 	return a.persistRunningPi(ctx, t)
 }
 

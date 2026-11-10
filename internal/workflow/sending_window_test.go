@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"io/fs"
@@ -20,10 +21,11 @@ import (
 	"github.com/makez-dev/makez/internal/store"
 )
 
-// TestSendingRowPrecedesTheRunnerFlush is the crash window. The runner can flush
-// sending or accepted only after the process starts, and another task cannot see
-// that sandbox file. The command row is committed first. After the lease expires
-// with no copied file, the other task still does not send that prompt.
+// errStoppedBeforeStart is a definite failure before Provider.Start. The process does not exist.
+var errStoppedBeforeStart = errors.New("stopped before the process started")
+
+// TestSendingRowPrecedesTheRunnerFlush is the crash after the process exists.
+// The disposition file is missing, so an accept is unknown. The other task does not send.
 // This does not start Pi and does not prove checkpoint recovery.
 func TestSendingRowPrecedesTheRunnerFlush(t *testing.T) {
 	url := os.Getenv("MAKEZ_TEST_DATABASE_URL")
@@ -88,6 +90,159 @@ func TestSendingRowPrecedesTheRunnerFlush(t *testing.T) {
 		}
 		requireSending(t, db, fx.workspace, session.ID, fx.prompt)
 	}
+}
+
+// TestPromptIsSentOnceUntilTheProcessStarts distinguishes the two crash points.
+// Before the process exists, the lease holder or the next writer sends the prompt once.
+// After the process exists, a missing disposition is an unknown accept and is not sent again.
+// This does not start Pi and does not prove checkpoint recovery.
+func TestPromptIsSentOnceUntilTheProcessStarts(t *testing.T) {
+	url := os.Getenv("MAKEZ_TEST_DATABASE_URL")
+	if url == "" {
+		t.Skip("MAKEZ_TEST_DATABASE_URL is not set")
+	}
+	ctx := t.Context()
+	db, err := store.Open(ctx, url)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(db.Close)
+	if err = db.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	t.Run("LeaseHolderBeforeStart", func(t *testing.T) {
+		fx := seedPiLaunch(t, db, url)
+		gate := &sendingGate{t: t, db: db, fx: fx, blockWrites: 1}
+		activities := newPiActivities(t, db, gate)
+		if err = activities.Launch(ctx, Input{WorkspaceID: fx.workspace, TaskID: fx.taskA}); !errors.Is(err, errStoppedBeforeStart) {
+			t.Fatalf("first launch = %v", err)
+		}
+		if gate.started {
+			t.Fatal("process started before the instruction was written")
+		}
+		prompt := requirePrompt(t, db, fx)
+		if prompt.Disposition != string(piharness.DispositionSending) || prompt.Started {
+			t.Fatalf("prompt = %+v", prompt)
+		}
+		if err = activities.Launch(ctx, Input{WorkspaceID: fx.workspace, TaskID: fx.taskA}); err != nil {
+			t.Fatal(err)
+		}
+		if countSends(gate.modes) != 1 {
+			t.Fatalf("modes = %v", gate.modes)
+		}
+		prompt = requirePrompt(t, db, fx)
+		if !prompt.Started {
+			t.Fatal("process start was not recorded")
+		}
+		if err = activities.Launch(ctx, Input{WorkspaceID: fx.workspace, TaskID: fx.taskA}); err != nil {
+			t.Fatal(err)
+		}
+		if countSends(gate.modes) != 1 {
+			t.Fatalf("prompt was sent again: %v", gate.modes)
+		}
+	})
+	t.Run("NextWriterBeforeStart", func(t *testing.T) {
+		fx := seedPiLaunch(t, db, url)
+		gate := &sendingGate{t: t, db: db, fx: fx, blockWrites: 1}
+		activities := newPiActivities(t, db, gate)
+		if err = activities.Launch(ctx, Input{WorkspaceID: fx.workspace, TaskID: fx.taskA}); !errors.Is(err, errStoppedBeforeStart) {
+			t.Fatalf("first launch = %v", err)
+		}
+		prompt := requirePrompt(t, db, fx)
+		if prompt.Disposition != string(piharness.DispositionSending) || prompt.Started {
+			t.Fatalf("prompt = %+v", prompt)
+		}
+		session, err := db.EnsureNativeSession(ctx, fx.workspace, fx.identity())
+		if err != nil {
+			t.Fatal(err)
+		}
+		expireWriter(t, url, session.ID)
+		if err = activities.Launch(ctx, Input{WorkspaceID: fx.workspace, TaskID: fx.taskB}); err != nil {
+			t.Fatal(err)
+		}
+		if countSends(gate.modes) != 1 || gate.modes[0] != "send" {
+			t.Fatalf("modes = %v", gate.modes)
+		}
+		prompt = requirePrompt(t, db, fx)
+		if !prompt.Started || prompt.RunID != fx.runB {
+			t.Fatalf("prompt = %+v", prompt)
+		}
+		expireWriter(t, url, session.ID)
+		if err = activities.Launch(ctx, Input{WorkspaceID: fx.workspace, TaskID: fx.taskA}); err != nil {
+			t.Fatal(err)
+		}
+		if countSends(gate.modes) != 1 {
+			t.Fatalf("prompt was sent again: %v", gate.modes)
+		}
+	})
+	t.Run("AfterStart", func(t *testing.T) {
+		fx := seedPiLaunch(t, db, url)
+		gate := &sendingGate{t: t, db: db, fx: fx}
+		activities := newPiActivities(t, db, gate)
+		if err = activities.Launch(ctx, Input{WorkspaceID: fx.workspace, TaskID: fx.taskA}); err != nil {
+			t.Fatal(err)
+		}
+		if !gate.started || !gate.missingDisposition {
+			t.Fatal("started process did not outlive a missing disposition file")
+		}
+		prompt := requirePrompt(t, db, fx)
+		if prompt.Disposition != string(piharness.DispositionSending) || !prompt.Started {
+			t.Fatalf("prompt = %+v", prompt)
+		}
+		session, err := db.EnsureNativeSession(ctx, fx.workspace, fx.identity())
+		if err != nil {
+			t.Fatal(err)
+		}
+		expireWriter(t, url, session.ID)
+		if err = activities.Launch(ctx, Input{WorkspaceID: fx.workspace, TaskID: fx.taskB}); err != nil {
+			t.Fatal(err)
+		}
+		if countSends(gate.modes) != 1 || len(gate.modes) != 2 || gate.modes[1] != "reconcile_only" {
+			t.Fatalf("modes = %v", gate.modes)
+		}
+		for _, next := range []string{"settled", "rejected", "reconciled", "none", "sending"} {
+			err = db.SaveAttemptProgress(ctx, fx.workspace, fx.runB, session.ID, 1, next, piharness.PromptHash(fx.prompt), "")
+			if err != nil {
+				t.Fatalf("save %s: %v", next, err)
+			}
+			prompt = requirePrompt(t, db, fx)
+			if prompt.Disposition != string(piharness.DispositionSending) || !prompt.Started {
+				t.Fatalf("after %s prompt = %+v", next, prompt)
+			}
+		}
+	})
+}
+
+func newPiActivities(t *testing.T, db *store.Store, gate *sendingGate) *Activities {
+	t.Helper()
+	adapter, err := agent.NewPi(agent.PiConfig{Binary: "/usr/local/bin/pi"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return &Activities{DB: db, Provider: gate, Agents: map[string]core.AgentAdapter{piharness.AdapterID + "@" + piharness.AdapterVersion: adapter}}
+}
+
+func requirePrompt(t *testing.T, db *store.Store, fx launchFixture) store.NativePrompt {
+	t.Helper()
+	session, err := db.EnsureNativeSession(t.Context(), fx.workspace, fx.identity())
+	if err != nil {
+		t.Fatal(err)
+	}
+	row, err := db.NativePrompt(t.Context(), fx.workspace, session.ID, piharness.PromptHash(fx.prompt))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return row
+}
+
+func countSends(modes []string) int {
+	count := 0
+	for _, mode := range modes {
+		if mode == "send" || mode == "reconcile_then_send" {
+			count++
+		}
+	}
+	return count
 }
 
 type launchFixture struct {
@@ -223,6 +378,7 @@ type sendingGate struct {
 	started            bool
 	missingDisposition bool
 	modes              []string
+	blockWrites        int
 }
 
 func (g *sendingGate) BackendID() string { return "test" }
@@ -272,6 +428,10 @@ func (g *sendingGate) WriteFile(_ context.Context, _ core.SandboxRef, path strin
 	data, err := io.ReadAll(contents)
 	if err != nil {
 		return err
+	}
+	if path == piharness.InstructionPath && g.blockWrites > 0 {
+		g.blockWrites--
+		return errStoppedBeforeStart
 	}
 	if path != piharness.InstructionPath {
 		return nil

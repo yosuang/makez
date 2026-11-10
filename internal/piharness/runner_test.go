@@ -39,6 +39,44 @@ func TestRunnerReconcilesWithoutSending(t *testing.T) {
 	}
 }
 
+func TestRunnerWaitsToSendUntilRelease(t *testing.T) {
+	dir := t.TempDir()
+	binary := fakePi(t, dir, fakeOptions{version: PackageVersion, settle: true})
+	release := filepath.Join(dir, "release")
+	instruction := instructionAt(t, dir, binary, Instruction{Mode: "send", ReleasePath: release, SettleSeconds: 5})
+	cmd := exec.Command("python3", filepath.Join(dir, "run.py"), instruction)
+	cmd.Env = runnerEnv(dir)
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, filepath.Join(dir, "pi.argv"), "--mode")
+	time.Sleep(200 * time.Millisecond)
+	if log, err := os.ReadFile(filepath.Join(dir, "pi.log")); err == nil && strings.Contains(string(log), "prompt") {
+		t.Fatalf("prompt before release:\n%s", log)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "disposition.json")); !os.IsNotExist(err) {
+		t.Fatal("disposition was written before release")
+	}
+	if err := os.WriteFile(release, []byte("1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- cmd.Wait() }()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(8 * time.Second):
+		_ = cmd.Process.Kill()
+		t.Fatal("runner did not send after release")
+	}
+	seen := readFile(t, filepath.Join(dir, "disposition-at-prompt"))
+	if !strings.Contains(seen, `"disposition":"sending"`) {
+		t.Fatalf("disposition at prompt = %s", seen)
+	}
+}
+
 func TestRunnerRecordsSendingBeforeThePrompt(t *testing.T) {
 	dir := t.TempDir()
 	binary := fakePi(t, dir, fakeOptions{version: PackageVersion, settle: true})

@@ -129,6 +129,7 @@ type MakezNativeCommand struct {
 	Disposition  string
 	CreatedAt    pgtype.Timestamptz
 	UpdatedAt    pgtype.Timestamptz
+	Started      bool
 }
 
 type MakezNativeSession struct {

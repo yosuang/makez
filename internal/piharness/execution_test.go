@@ -37,6 +37,18 @@ func TestDecideDoesNotResendACommandThatMightHaveBeenAccepted(t *testing.T) {
 	}
 }
 
+func TestDeliverSendsUntilTheProcessStarts(t *testing.T) {
+	if !Deliver(DispositionSending, true, HistoryUnread, false).SendPrompt {
+		t.Fatal("an unstarted prompt was not sent")
+	}
+	if Deliver(DispositionSending, true, HistoryUnread, true).SendPrompt {
+		t.Fatal("a started prompt was sent again")
+	}
+	if Deliver(DispositionAccepted, true, HistoryUnread, false).SendPrompt {
+		t.Fatal("an accepted prompt was sent")
+	}
+}
+
 func TestMode(t *testing.T) {
 	if Mode(Action{SendPrompt: true}) != "send" {
 		t.Fatal("send")

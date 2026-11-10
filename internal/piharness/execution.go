@@ -32,6 +32,9 @@ const (
 	ScriptPath = "/workspace/makez-pi-run.py"
 	// DispositionPath is the fsynced recovery ledger for the current process.
 	DispositionPath = "/workspace/pi-disposition.json"
+	// ReleasePath is written after the process exists and the command row is marked started.
+	// The runner must not send the prompt before this file exists.
+	ReleasePath = "/workspace/pi-release"
 	// HistoryPath is the get_messages snapshot from a reconcile read.
 	HistoryPath = "/workspace/pi-history.json"
 	// ResultPath is the runner's result manifest, same location as demo.
@@ -73,6 +76,16 @@ const (
 type Action struct {
 	ReadHistory bool
 	SendPrompt  bool
+}
+
+// Deliver decides one prompt. A sending row whose process has not started is sent
+// once: Pi has not received it. After the process has started, Decide applies and
+// an unknown accept is not sent again.
+func Deliver(prev Disposition, sameCommand bool, history History, processStarted bool) Action {
+	if sameCommand && prev == DispositionSending && !processStarted {
+		return Action{SendPrompt: true}
+	}
+	return Decide(prev, sameCommand, history)
 }
 
 // Decide applies the recovery rule. A command that might already have been

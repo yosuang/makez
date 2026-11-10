@@ -45,6 +45,9 @@ def load_instruction(path):
         raise ValueError("instruction is missing a field")
     if inst["mode"] not in ("send", "reconcile_only", "reconcile_then_send"):
         raise ValueError("instruction mode is not supported")
+    release = inst.get("release_path", "")
+    if not isinstance(release, str) or (release != "" and not absolute_path(release)):
+        raise ValueError("instruction path must be absolute")
     for key in ("binary", "session_dir", "checkpoint", "disposition_path", "history_path", "result_path"):
         if not absolute_path(inst[key]):
             raise ValueError("instruction path must be absolute")
@@ -289,8 +292,24 @@ def read_history(session, inst):
     return True
 
 
+def wait_for_release(session, inst):
+    path = inst.get("release_path") or ""
+    if path == "":
+        return True
+    while not os.path.isfile(path):
+        if session.stop.is_set() or session.proc.poll() is not None:
+            return False
+        time.sleep(0.05)
+    return not session.stop.is_set()
+
+
 def send_prompt(session, inst, digest):
     if session.stop.is_set():
+        write_result(inst["result_path"], False, "Canceled before the prompt was sent.")
+        return 0
+    # The process can be running while the prompt is still unsent. Prompt bytes
+    # wait until Makez has recorded that this process started.
+    if not wait_for_release(session, inst):
         write_result(inst["result_path"], False, "Canceled before the prompt was sent.")
         return 0
     # Durable "sending" is written and flushed before any prompt byte reaches Pi.

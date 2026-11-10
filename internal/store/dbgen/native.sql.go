@@ -39,7 +39,7 @@ func (q *Queries) ClaimSessionWriter(ctx context.Context, arg ClaimSessionWriter
 }
 
 const getNativeCommand = `-- name: GetNativeCommand :one
-SELECT c.disposition, c.run_id, c.generation
+SELECT c.disposition, c.run_id, c.generation, c.started
 FROM makez_native_commands c
 JOIN makez_native_sessions s ON s.id = c.session_id
 WHERE c.session_id = $1 AND s.workspace_id = $2 AND c.prompt_sha256 = $3
@@ -55,12 +55,18 @@ type GetNativeCommandRow struct {
 	Disposition string
 	RunID       string
 	Generation  int64
+	Started     bool
 }
 
 func (q *Queries) GetNativeCommand(ctx context.Context, arg GetNativeCommandParams) (GetNativeCommandRow, error) {
 	row := q.db.QueryRow(ctx, getNativeCommand, arg.SessionID, arg.WorkspaceID, arg.PromptSha256)
 	var i GetNativeCommandRow
-	err := row.Scan(&i.Disposition, &i.RunID, &i.Generation)
+	err := row.Scan(
+		&i.Disposition,
+		&i.RunID,
+		&i.Generation,
+		&i.Started,
+	)
 	return i, err
 }
 
@@ -72,7 +78,7 @@ SELECT EXISTS (
   WHERE c.session_id = $1
     AND s.workspace_id = $2
     AND c.prompt_sha256 <> $3
-    AND c.disposition IN ('sending', 'accepted')
+    AND (c.disposition = 'accepted' OR (c.disposition = 'sending' AND c.started))
 ) AS unknown
 `
 
@@ -298,6 +304,35 @@ func (q *Queries) LockSessionOwner(ctx context.Context, arg LockSessionOwnerPara
 	return i, err
 }
 
+const markNativeCommandStarted = `-- name: MarkNativeCommandStarted :execrows
+UPDATE makez_native_commands
+SET started = true, updated_at = now()
+WHERE session_id = $1 AND prompt_sha256 = $2 AND workspace_id = $3
+  AND run_id = $4 AND generation = $5 AND disposition = 'sending'
+`
+
+type MarkNativeCommandStartedParams struct {
+	SessionID    string
+	PromptSha256 string
+	WorkspaceID  string
+	RunID        string
+	Generation   int64
+}
+
+func (q *Queries) MarkNativeCommandStarted(ctx context.Context, arg MarkNativeCommandStartedParams) (int64, error) {
+	result, err := q.db.Exec(ctx, markNativeCommandStarted,
+		arg.SessionID,
+		arg.PromptSha256,
+		arg.WorkspaceID,
+		arg.RunID,
+		arg.Generation,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const nativeCheckpoint = `-- name: NativeCheckpoint :one
 SELECT checkpoint
 FROM makez_native_sessions
@@ -439,13 +474,18 @@ func (q *Queries) SaveNativeDisposition(ctx context.Context, arg SaveNativeDispo
 
 const upsertNativeCommand = `-- name: UpsertNativeCommand :exec
 INSERT INTO makez_native_commands (
-  session_id, prompt_sha256, disposition, workspace_id, run_id, generation
-) VALUES ($1, $2, $3, $4, $5, $6)
+  session_id, prompt_sha256, disposition, workspace_id, run_id, generation, started
+) VALUES ($1, $2, $3, $4, $5, $6, $7)
 ON CONFLICT (session_id, prompt_sha256) DO UPDATE
 SET disposition = EXCLUDED.disposition,
     workspace_id = EXCLUDED.workspace_id,
     run_id = EXCLUDED.run_id,
     generation = EXCLUDED.generation,
+    -- A repeated sending write by the same run must not clear a start that already happened.
+    started = CASE
+      WHEN makez_native_commands.started AND makez_native_commands.run_id = EXCLUDED.run_id THEN true
+      ELSE EXCLUDED.started
+    END,
     updated_at = now()
 `
 
@@ -456,6 +496,7 @@ type UpsertNativeCommandParams struct {
 	WorkspaceID  string
 	RunID        string
 	Generation   int64
+	Started      bool
 }
 
 func (q *Queries) UpsertNativeCommand(ctx context.Context, arg UpsertNativeCommandParams) error {
@@ -466,6 +507,7 @@ func (q *Queries) UpsertNativeCommand(ctx context.Context, arg UpsertNativeComma
 		arg.WorkspaceID,
 		arg.RunID,
 		arg.Generation,
+		arg.Started,
 	)
 	return err
 }
