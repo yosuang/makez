@@ -168,10 +168,13 @@ func (a *cli) Decode(page core.OutputPage, previousState []byte) (core.DecodedOu
 }
 
 func (a *cli) Collect(ctx context.Context, workspace core.WorkspaceReader, exit core.ProcessExit) (core.AgentResult, error) {
-	if exit.Code != 0 || exit.Signal != "" {
+	// Pi's no-key rejection exits 1 after writing succeeded:false. That manifest stays a
+	// failure. A non-zero exit that claims success is not archived or published.
+	failedExit := exit.Code != 0 || exit.Signal != ""
+	file, err := workspace.Read(ctx, manifestPath)
+	if err != nil && failedExit {
 		return core.AgentResult{}, fmt.Errorf("agent exited unsuccessfully: code=%d signal=%s", exit.Code, exit.Signal)
 	}
-	file, err := workspace.Read(ctx, manifestPath)
 	if err != nil {
 		return core.AgentResult{}, fmt.Errorf("read result manifest: %w", err)
 	}
@@ -203,6 +206,12 @@ func (a *cli) Collect(ctx context.Context, workspace core.WorkspaceReader, exit 
 	}
 	if manifest.Succeeded == nil || strings.TrimSpace(manifest.Summary) == "" || len(manifest.Summary) > 16<<10 || len(manifest.Artifacts) > artifact.MaxFiles-1 {
 		return core.AgentResult{}, fmt.Errorf("result manifest requires succeeded, summary (1..16384 bytes), and at most %d artifacts", artifact.MaxFiles-1)
+	}
+	if failedExit {
+		if *manifest.Succeeded {
+			return core.AgentResult{}, fmt.Errorf("agent exited unsuccessfully: code=%d signal=%s", exit.Code, exit.Signal)
+		}
+		return core.AgentResult{Succeeded: false, Summary: manifest.Summary}, nil
 	}
 	result := core.AgentResult{Succeeded: *manifest.Succeeded, Summary: manifest.Summary, Artifacts: []core.ArtifactCandidate{{Path: manifestPath, MediaType: "application/json", Required: true}}}
 	seen := map[string]bool{manifestPath: true}

@@ -104,8 +104,10 @@ func (a *piAdapter) Plan(input core.AgentInput) (core.AgentPlan, error) {
 	if _, err := piharness.ParseExecution(input.Config); err != nil {
 		return core.AgentPlan{}, err
 	}
+	// The runner's only argument is the instruction file. Omitting it exits before Pi starts.
+	argv := append(append([]string(nil), a.base.config.Argv...), piharness.InstructionPath)
 	plan := core.AgentPlan{
-		Command:           core.CommandSpec{Argv: append([]string(nil), a.base.config.Argv...), Workdir: "/workspace", Env: map[string]string{}},
+		Command:           core.CommandSpec{Argv: argv, Workdir: "/workspace", Env: map[string]string{}},
 		Files:             []core.InputFile{{Path: piharness.ScriptPath, Data: piharness.RunnerScript()}},
 		Stop:              core.StopPolicy{Signal: "SIGTERM", GracePeriod: 15 * time.Second},
 		RequiredArtifacts: []string{piharness.ResultPath},

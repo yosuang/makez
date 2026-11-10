@@ -17,7 +17,7 @@ func TestPiPlanStaysOutsideTheToolBoundary(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Join(plan.Command.Argv, " ") != "/usr/local/bin/python3 -u "+piharness.ScriptPath {
+	if strings.Join(plan.Command.Argv, " ") != "/usr/local/bin/python3 -u "+piharness.ScriptPath+" "+piharness.InstructionPath {
 		t.Fatalf("argv = %#v", plan.Command.Argv)
 	}
 	if len(plan.Command.Env) != 0 || len(plan.SecretRefs) != 0 {
