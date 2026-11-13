@@ -164,7 +164,10 @@ func enqueue(ctx context.Context, tx pgx.Tx, t Task, command string) error {
 	return err
 }
 
-// Submit creates a task and dispatch command, or returns its idempotent replay.
+// Submit creates a task and one START_TASK command, or returns the original task.
+// The same idempotency key and request hash returns that task with created false and
+// does not enqueue a second START_TASK. A different hash returns ErrConflict and does
+// not create a second task.
 func (s *Store) Submit(ctx context.Context, workspace, key string, input SubmitInput) (Task, bool, error) {
 	if workspace == "" || len(workspace) > 128 || key == "" || len(key) > 256 || input.Prompt == "" || len(input.Prompt) > 1<<20 || input.AgentID == "" || input.AgentVersion == "" || input.ProfileID == "" || input.ProfileVersion == "" {
 		return Task{}, false, fmt.Errorf("invalid task input: %w", ErrInvalidInput)
