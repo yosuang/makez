@@ -21,6 +21,8 @@ func (s *Store) ClaimObserver(ctx context.Context, runID string) (int64, error) 
 }
 
 // AppendOutput commits decoded events and the parser cursor for the current observer.
+// The same run, attempt generation, source offset, and item index does not insert
+// another event row. The epoch argument is the observer epoch; a stale epoch writes nothing.
 func (s *Store) AppendOutput(ctx context.Context, runID string, epoch int64, cursor string, parser []byte, events []core.AgentEvent) error {
 	if len(parser) > 64<<10 || len(cursor) > 4096 || len(events) > 1024 {
 		return fmt.Errorf("output batch exceeds limit")
