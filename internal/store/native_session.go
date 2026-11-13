@@ -173,9 +173,11 @@ func (s *Store) LoadCheckpoint(ctx context.Context, workspace, sessionID string)
 	return data, err
 }
 
-// SaveCheckpoint stores bytes Pi actually wrote. The current writer is the only caller that can replace them.
-func (s *Store) SaveCheckpoint(ctx context.Context, workspace, sessionID, runID string, data []byte) error {
-	if len(data) == 0 || len(data) > 1<<20 || runID == "" {
+// SaveCheckpoint stores bytes Pi actually wrote.
+// The current writer is the only caller that can replace them, and only for this run's latest attempt.
+// An older attempt must not roll the checkpoint back after a later attempt has opened.
+func (s *Store) SaveCheckpoint(ctx context.Context, workspace, sessionID, runID string, generation int64, data []byte) error {
+	if len(data) == 0 || len(data) > 1<<20 || runID == "" || generation < 1 {
 		return ErrInvalidInput
 	}
 	tx, err := s.pool.Begin(ctx)
@@ -186,6 +188,19 @@ func (s *Store) SaveCheckpoint(ctx context.Context, workspace, sessionID, runID 
 	q := dbgen.New(tx)
 	if err = requireWriter(ctx, q, workspace, sessionID, runID); err != nil {
 		return err
+	}
+	latest, err := q.LockLatestAttempt(ctx, dbgen.LockLatestAttemptParams{WorkspaceID: workspace, RunID: runID})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return ErrNotFound
+	}
+	if err != nil {
+		return err
+	}
+	if latest.SessionID != sessionID {
+		return ErrConflict
+	}
+	if latest.Generation != generation {
+		return ErrStaleWriter
 	}
 	rows, err := q.SaveNativeCheckpoint(ctx, dbgen.SaveNativeCheckpointParams{ID: sessionID, WorkspaceID: workspace, Checkpoint: data})
 	if err != nil {
