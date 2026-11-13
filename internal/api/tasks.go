@@ -124,7 +124,10 @@ func (s *Server) get(c *echo.Context) error {
 	return c.JSON(200, taskResponseDTO(v))
 }
 
-// cancel requests cancellation and returns the current state.
+// cancel records a cancel request and returns the task. A task with no run
+// becomes CANCELED. A task with a run becomes CANCELING. The accepted
+// response is neither SUCCEEDED nor FAILED. A task that is already terminal
+// is returned unchanged.
 // @Summary Cancel task
 // @Tags tasks
 // @Produce json
