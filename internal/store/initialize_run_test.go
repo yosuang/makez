@@ -26,12 +26,13 @@ func TestInitializeRunKeepsOneRun(t *testing.T) {
 		t.Fatalf("principal = %+v workspace %s", principal, bound)
 	}
 	ctx = WithPrincipal(ctx, principal)
+	fx := runInitFixture{db: db, ctx: ctx, workspace: workspace}
 	if n := runTaskIDUniqueCount(t, db); n != 1 {
 		t.Fatalf("makez_runs.task_id unique constraints = %d", n)
 	}
 
 	const backend = "test"
-	task := submitFreshTask(t, db, ctx, workspace)
+	task := submitFreshTask(t, fx)
 	first, err := db.InitializeRun(ctx, workspace, task.ID, backend)
 	if err != nil || first.State != core.TaskRunning || first.Reason != "" || first.Run == nil || first.Run.ID == "" || first.Run.TaskID != task.ID || first.Run.State != core.RunPreparing || first.Run.BackendID != backend {
 		t.Fatalf("first InitializeRun = %+v err=%v", first, err)
@@ -67,15 +68,15 @@ func TestInitializeRunKeepsOneRun(t *testing.T) {
 		t.Fatalf("stored task = state %s reason %q run %v", stored.State, stored.Reason, stored.Run)
 	}
 
-	late := submitFreshTask(t, db, ctx, workspace)
+	late := submitFreshTask(t, fx)
 	moveTask(t, db, late.ID, late.CreatedAt, time.Now().Add(-time.Minute))
-	requireClock(t, db, ctx, workspace, late.ID, false, true)
-	requireDeadlineExceeded(t, db, ctx, workspace, late.ID, backend)
+	requireClock(t, fx, late.ID, false, true)
+	requireDeadlineExceeded(t, fx, late.ID, backend)
 
-	aged := submitFreshTask(t, db, ctx, workspace)
+	aged := submitFreshTask(t, fx)
 	moveTask(t, db, aged.ID, time.Now().Add(-11*time.Minute), time.Now().Add(30*time.Minute))
-	requireClock(t, db, ctx, workspace, aged.ID, true, false)
-	requireDeadlineExceeded(t, db, ctx, workspace, aged.ID, backend)
+	requireClock(t, fx, aged.ID, true, false)
+	requireDeadlineExceeded(t, fx, aged.ID, backend)
 
 	for _, terminal := range []struct {
 		state  core.TaskState
@@ -85,33 +86,39 @@ func TestInitializeRunKeepsOneRun(t *testing.T) {
 		{core.TaskFailed, "STOP_UNCONFIRMED"},
 		{core.TaskCanceled, "CANCEL_REQUESTED"},
 	} {
-		requireTerminalWithoutRun(t, db, ctx, workspace, backend, terminal.state, terminal.reason)
+		requireTerminalWithoutRun(t, fx, backend, terminal.state, terminal.reason)
 	}
 }
 
-func submitFreshTask(t *testing.T, db *Store, ctx context.Context, workspace string) Task {
+type runInitFixture struct {
+	db        *Store
+	ctx       context.Context
+	workspace string
+}
+
+func submitFreshTask(t *testing.T, fx runInitFixture) Task {
 	t.Helper()
-	task, created, err := db.Submit(ctx, workspace, "run-key-"+newID(), SubmitInput{
+	task, created, err := fx.db.Submit(fx.ctx, fx.workspace, "run-key-"+newID(), SubmitInput{
 		Prompt: "initialize-run", AgentID: "demo", AgentVersion: "1", ProfileID: "default", ProfileVersion: "1", TimeoutSeconds: 3600,
 	})
 	if err != nil || !created || task.ID == "" || task.State != core.TaskQueued || task.Run != nil || task.Reason != "" {
 		t.Fatalf("submit = %+v created=%v err=%v", task, created, err)
 	}
-	if n, _, _, _ := runsForTask(t, db, task.ID); n != 0 {
+	if n, _, _, _ := runsForTask(t, fx.db, task.ID); n != 0 {
 		t.Fatalf("runs after submit = %d", n)
 	}
 	return task
 }
 
-func requireDeadlineExceeded(t *testing.T, db *Store, ctx context.Context, workspace, id, backend string) {
+func requireDeadlineExceeded(t *testing.T, fx runInitFixture, id, backend string) {
 	t.Helper()
 	for range 2 {
-		got, err := db.InitializeRun(ctx, workspace, id, backend)
-		row := readTaskState(t, db, id)
+		got, err := fx.db.InitializeRun(fx.ctx, fx.workspace, id, backend)
+		row := readTaskState(t, fx.db, id)
 		if got.State == core.TaskSucceeded || row.state == string(core.TaskSucceeded) {
 			t.Fatalf("expired task wrote SUCCEEDED")
 		}
-		n, runID, _, _ := runsForTask(t, db, id)
+		n, runID, _, _ := runsForTask(t, fx.db, id)
 		if n != 0 || got.Run != nil || runID != "" {
 			t.Fatalf("expired task inserted a run: count %d id %s run %v", n, runID, got.Run)
 		}
@@ -124,17 +131,17 @@ func requireDeadlineExceeded(t *testing.T, db *Store, ctx context.Context, works
 	}
 }
 
-func requireTerminalWithoutRun(t *testing.T, db *Store, ctx context.Context, workspace, backend string, state core.TaskState, reason string) {
+func requireTerminalWithoutRun(t *testing.T, fx runInitFixture, backend string, state core.TaskState, reason string) {
 	t.Helper()
-	task := submitFreshTask(t, db, ctx, workspace)
-	moveTaskState(t, db, task.ID, state, reason)
+	task := submitFreshTask(t, fx)
+	moveTaskState(t, fx.db, task.ID, state, reason)
 	for range 2 {
-		got, err := db.InitializeRun(ctx, workspace, task.ID, backend)
+		got, err := fx.db.InitializeRun(fx.ctx, fx.workspace, task.ID, backend)
 		if err != nil {
 			t.Fatal(err)
 		}
-		row := readTaskState(t, db, task.ID)
-		n, runID, _, _ := runsForTask(t, db, task.ID)
+		row := readTaskState(t, fx.db, task.ID)
+		n, runID, _, _ := runsForTask(t, fx.db, task.ID)
 		if n != 0 || got.Run != nil || runID != "" {
 			t.Fatalf("terminal %s gained a run: count %d id %s run %v", state, n, runID, got.Run)
 		}
@@ -146,9 +153,9 @@ func requireTerminalWithoutRun(t *testing.T, db *Store, ctx context.Context, wor
 
 // requireClock checks the fixture that selects the deadline clause or the age clause.
 // older is created more than 10 minutes ago. past means the deadline is not still ahead.
-func requireClock(t *testing.T, db *Store, ctx context.Context, workspace, id string, older, past bool) {
+func requireClock(t *testing.T, fx runInitFixture, id string, older, past bool) {
 	t.Helper()
-	task, err := db.Get(ctx, workspace, id)
+	task, err := fx.db.Get(fx.ctx, fx.workspace, id)
 	if err != nil {
 		t.Fatal(err)
 	}
