@@ -122,10 +122,10 @@ func TestNativeSessionSingleWriter(t *testing.T) {
 			t.Fatalf("release cleared the new writer: %+v", got)
 		}
 		checkpoint := []byte("{}\n")
-		if err = db.SaveCheckpoint(t.Context(), fx.workspace, fx.session, fx.runA, checkpoint); !errors.Is(err, ErrStaleWriter) {
+		if err = db.SaveCheckpoint(t.Context(), fx.workspace, fx.session, fx.runA, 1, checkpoint); !errors.Is(err, ErrStaleWriter) {
 			t.Fatalf("stale checkpoint = %v", err)
 		}
-		if err = other.SaveCheckpoint(t.Context(), fx.workspace, fx.session, fx.runB, checkpoint); err != nil {
+		if err = other.SaveCheckpoint(t.Context(), fx.workspace, fx.session, fx.runB, 1, checkpoint); err != nil {
 			t.Fatal(err)
 		}
 		loaded, err := db.LoadCheckpoint(t.Context(), fx.workspace, fx.session)
@@ -163,6 +163,38 @@ func TestNativeSessionSingleWriter(t *testing.T) {
 		openGeneration(t, other, fx, fx.runB, fx.hashA)
 		saveProgress(t, other, fx, fx.runB, 1, "sending", fx.hashA, "")
 		requireDisposition(t, db, fx, fx.hashA, "sending")
+		if commandCount(t, db, fx.session) != 1 {
+			t.Fatalf("commands = %d", commandCount(t, db, fx.session))
+		}
+	})
+	t.Run("StaleAttemptDoesNotAdvanceCheckpoint", func(t *testing.T) {
+		fx := seedPersonalSession(t, db)
+		openGeneration(t, db, fx, fx.runA, fx.hashA)
+		if err := db.SaveCheckpoint(t.Context(), fx.workspace, fx.session, fx.runA, 1, []byte("checkpoint-v1\n")); err != nil {
+			t.Fatal(err)
+		}
+		saveProgress(t, db, fx, fx.runA, 1, "accepted", fx.hashA, "lost")
+		next, err := db.OpenAttempt(t.Context(), fx.workspace, fx.runA, fx.session, fx.hashA)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if next.Generation != 2 {
+			t.Fatalf("generation = %d", next.Generation)
+		}
+		second := []byte("checkpoint-v2\n")
+		if err = db.SaveCheckpoint(t.Context(), fx.workspace, fx.session, fx.runA, 2, second); err != nil {
+			t.Fatal(err)
+		}
+		if err = db.SaveCheckpoint(t.Context(), fx.workspace, fx.session, fx.runA, 1, []byte("checkpoint-stale\n")); !errors.Is(err, ErrStaleWriter) {
+			t.Fatalf("stale attempt checkpoint = %v", err)
+		}
+		loaded, err := db.LoadCheckpoint(t.Context(), fx.workspace, fx.session)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(loaded) != string(second) {
+			t.Fatalf("checkpoint = %q", loaded)
+		}
 		if commandCount(t, db, fx.session) != 1 {
 			t.Fatalf("commands = %d", commandCount(t, db, fx.session))
 		}

@@ -499,7 +499,7 @@ func (a *Activities) capturePiSession(ctx context.Context, t store.Task) error {
 		slog.WarnContext(ctx, "pi checkpoint was not stored", "bytes", len(data))
 		return nil
 	}
-	err = a.DB.SaveCheckpoint(ctx, t.WorkspaceID, session.ID, t.Run.ID, data)
+	err = a.DB.SaveCheckpoint(ctx, t.WorkspaceID, session.ID, t.Run.ID, piGeneration(t), data)
 	if errors.Is(err, store.ErrStaleWriter) {
 		slog.WarnContext(ctx, "skipped stale pi checkpoint write")
 		return nil
