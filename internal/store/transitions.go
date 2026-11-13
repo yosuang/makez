@@ -245,6 +245,8 @@ func operationStep(step string) bool {
 }
 
 // BeginOperation records the intent and request hash of a keyed external operation.
+// The bool is true only when this call inserts the row. The same run, step, and
+// hash returns the stored phase and false, which is not a new external dispatch.
 func (s *Store) BeginOperation(ctx context.Context, runID, step, hash string) (string, bool, error) {
 	if hash == "" || !operationStep(step) {
 		return "", false, ErrConflict
@@ -268,6 +270,7 @@ func (s *Store) BeginOperation(ctx context.Context, runID, step, hash string) (s
 		if oldHash != hash {
 			return phase, false, ErrConflict
 		}
+		// Same run, step, and request hash keeps this row.
 		return phase, false, nil
 	}
 	if !errors.Is(err, pgx.ErrNoRows) {
@@ -287,8 +290,20 @@ func (s *Store) BeginOperation(ctx context.Context, runID, step, hash string) (s
 }
 
 // ConfirmOperation records the reconciled outcome of a keyed external operation.
+// A row that is already CONFIRMED is left unchanged, so the retry is not a new external dispatch.
 func (s *Store) ConfirmOperation(ctx context.Context, runID, step string) error {
-	tag, err := dbgen.New(s.pool).ConfirmOperationState(ctx, dbgen.ConfirmOperationStateParams{RunID: runID, Step: step})
+	q := dbgen.New(s.pool)
+	operation, err := q.GetOperation(ctx, dbgen.GetOperationParams{RunID: runID, Step: step})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return ErrNotFound
+	}
+	if err != nil {
+		return err
+	}
+	if operation.Phase == "CONFIRMED" {
+		return nil
+	}
+	tag, err := q.ConfirmOperationState(ctx, dbgen.ConfirmOperationStateParams{RunID: runID, Step: step})
 	if err != nil {
 		return err
 	}
