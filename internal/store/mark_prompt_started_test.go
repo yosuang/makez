@@ -75,6 +75,18 @@ func TestMarkPromptStartedRequiresTheCurrentWriter(t *testing.T) {
 	requireRunningWithoutOutbox(t, db, fx)
 }
 
+func recordUnstartedSending(t *testing.T, db *Store, fx leasedSession) NativePrompt {
+	t.Helper()
+	openGeneration(t, db, fx, fx.runA, fx.hashA)
+	saveProgress(t, db, fx, fx.runA, 1, "sending", fx.hashA, "")
+	held := sendingPrompt(fx.runA, false, 1)
+	row, err := db.NativePrompt(t.Context(), fx.workspace, fx.session, fx.hashA)
+	if err != nil || row != held {
+		t.Fatalf("run A NativePrompt = %+v %v, want %+v", row, err, held)
+	}
+	return held
+}
+
 func sendingPrompt(runID string, started bool, generation int64) NativePrompt {
 	return NativePrompt{Disposition: "sending", Started: started, RunID: runID, Generation: generation, Found: true}
 }

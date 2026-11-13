@@ -15,12 +15,7 @@ func TestMarkPromptStartedLeavesAnotherGeneration(t *testing.T) {
 	db := leaseDB(t)
 	ctx := t.Context()
 	fx := seedPersonalSession(t, db)
-	openGeneration(t, db, fx, fx.runA, fx.hashA)
-	saveProgress(t, db, fx, fx.runA, 1, "sending", fx.hashA, "")
-	held := sendingPrompt(fx.runA, false, 1)
-	if row, err := db.NativePrompt(ctx, fx.workspace, fx.session, fx.hashA); err != nil || row != held {
-		t.Fatalf("run A NativePrompt = %+v %v, want %+v", row, err, held)
-	}
+	held := recordUnstartedSending(t, db, fx)
 
 	markErr := db.MarkPromptStarted(ctx, fx.workspace, fx.runA, fx.session, 2, fx.hashA)
 	row, err := db.NativePrompt(ctx, fx.workspace, fx.session, fx.hashA)
