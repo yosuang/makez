@@ -340,7 +340,9 @@ func (s *Store) attachRuns(ctx context.Context, tasks []Task) ([]Task, error) {
 	return tasks, nil
 }
 
-// Cancel records cancellation and queues the corresponding workflow command.
+// Cancel records a cancel request. It does not mark the task or the run
+// succeeded or failed. A task with no run becomes CANCELED. A task with a run
+// becomes CANCELING and queues CANCEL_TASK. The execution outcome is a later publish.
 func (s *Store) Cancel(ctx context.Context, workspace, id string) (Task, error) {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
