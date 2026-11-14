@@ -309,7 +309,9 @@ func (a *Activities) writePiInstruction(ctx context.Context, t store.Task, opene
 
 // finishPromptDelivery marks the prompt started and then lets the runner write it.
 // The mark is committed only after a process ref exists. The release file is second,
-// so a crash before the process exists leaves the prompt sendable.
+// so a crash before the process exists leaves the prompt sendable. The supervisor
+// may create that absent file while the process runs. Replacing an existing file
+// stays rejected.
 func (a *Activities) finishPromptDelivery(ctx context.Context, t store.Task) error {
 	if t.AgentID != piharness.AdapterID || t.Run == nil || t.Run.Process == nil || t.Run.Sandbox == nil {
 		return nil

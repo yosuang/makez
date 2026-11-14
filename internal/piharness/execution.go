@@ -33,7 +33,8 @@ const (
 	// DispositionPath is the fsynced recovery ledger for the current process.
 	DispositionPath = "/workspace/pi-disposition.json"
 	// ReleasePath is written after the process exists and the command row is marked started.
-	// The runner must not send the prompt before this file exists.
+	// The runner must not send the prompt before this file exists. The supervisor creates
+	// this absent file while the process runs and still rejects a replacement.
 	ReleasePath = "/workspace/pi-release"
 	// HistoryPath is the get_messages snapshot from a reconcile read.
 	HistoryPath = "/workspace/pi-history.json"
