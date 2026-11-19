@@ -14,6 +14,20 @@ import (
 	"github.com/makez-dev/makez/internal/core"
 )
 
+// releaseSentinel is created after the agent process exists. The runner waits
+// for this new file before it sends a prompt. It is not an input the process
+// has already read. The path matches piharness.ReleasePath; the supervisor does
+// not import that package.
+const releaseSentinel = "/workspace/pi-release"
+
+// listAgentProcesses is the live uid 1000 scan. Tests replace it.
+var listAgentProcesses = agentProcesses
+
+// chownAgent gives the workspace file to the agent user. Tests replace it.
+var chownAgent = func(file *os.File) error {
+	return file.Chown(agentUID, agentUID)
+}
+
 func (s *Supervisor) parent(path string, create bool) (*os.Root, string, error) {
 	path = strings.TrimPrefix(path, "/workspace/")
 	parts := strings.Split(path, "/")
@@ -112,12 +126,23 @@ func (s *Supervisor) Write(path string, content []byte) error {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	pids, err := agentProcesses()
+	pids, err := listAgentProcesses()
 	if err != nil {
 		return err
 	}
+	// The runner is already uid 1000 and waits for a file that does not exist yet.
+	// Creating that one file is the delivery handshake. Replacing any existing
+	// workspace entry, including a second write of the sentinel, stays rejected.
+	createOnly := false
 	if len(pids) > 0 {
-		return &fault{core.Conflict, "input files cannot be replaced while an Agent runs"}
+		exists, existsErr := workspaceEntryExists(s, path)
+		if existsErr != nil {
+			return existsErr
+		}
+		if path != releaseSentinel || exists {
+			return &fault{core.Conflict, "input files cannot be replaced while an Agent runs"}
+		}
+		createOnly = true
 	}
 	root, name, err := s.parent(path, true)
 	if err != nil {
@@ -140,7 +165,7 @@ func (s *Supervisor) Write(path string, content []byte) error {
 	}()
 	_, err = file.Write(content)
 	if err == nil {
-		err = file.Chown(agentUID, agentUID)
+		err = chownAgent(file)
 	}
 	if err == nil {
 		err = file.Chmod(0644)
@@ -152,7 +177,15 @@ func (s *Supervisor) Write(path string, content []byte) error {
 	if err != nil {
 		return err
 	}
-	if err = root.Rename(temporary, name); err != nil {
+	if createOnly {
+		err = renameExclusive(root, temporary, name)
+		if errors.Is(err, os.ErrExist) {
+			return &fault{core.Conflict, "input files cannot be replaced while an Agent runs"}
+		}
+	} else {
+		err = root.Rename(temporary, name)
+	}
+	if err != nil {
 		return err
 	}
 	dir, err := root.Open(".")
@@ -161,4 +194,23 @@ func (s *Supervisor) Write(path string, content []byte) error {
 	}
 	defer dir.Close() //nolint:errcheck // The directory sync result is returned separately.
 	return dir.Sync()
+}
+
+func workspaceEntryExists(s *Supervisor, path string) (bool, error) {
+	root, name, err := s.parent(path, false)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return false, nil
+		}
+		return false, err
+	}
+	defer root.Close() //nolint:errcheck // The directory handle owns no buffered file data.
+	_, err = root.Lstat(name)
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return true, nil
 }

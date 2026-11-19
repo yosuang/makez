@@ -21,7 +21,6 @@ import (
 	"github.com/makez-dev/makez/internal/artifact"
 	"github.com/makez-dev/makez/internal/core"
 	"github.com/makez-dev/makez/internal/piharness"
-	"github.com/makez-dev/makez/internal/sandbox"
 	"github.com/makez-dev/makez/internal/secret"
 	"github.com/makez-dev/makez/internal/store"
 	"github.com/makez-dev/makez/internal/telemetry"
@@ -141,7 +140,7 @@ func run() error {
 	}
 	defer tc.Close()
 	if mode != "api" {
-		p, e := sandbox.New(sandbox.Config{BaseURL: env("MAKEZ_SANDBOX_URL", "http://127.0.0.1:18080"), APIKey: os.Getenv("MAKEZ_SANDBOX_API_KEY"), InstallationID: env("MAKEZ_INSTALLATION_ID", "makez-local"), ControlKey: os.Getenv("MAKEZ_CONTROL_KEY"), Image: env("MAKEZ_RUNTIME_IMAGE", "makez-runtime:0.1")})
+		p, e := sandboxProvider()
 		if e != nil {
 			return e
 		}
