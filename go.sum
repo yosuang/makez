@@ -133,8 +133,8 @@ go.opentelemetry.io/proto/otlp v1.11.1 h1:SCrPqH9NE5CmBrOqpjNCiT0X5mGwMyGERXdogf
 go.opentelemetry.io/proto/otlp v1.11.1/go.mod h1:wq8W4aSf6bOy8RZyESOeQFr9Pu7wydWX/TY4sgvrTPg=
 go.temporal.io/api v1.64.3 h1:Q2oP9jVB5pSputb2j3BLAEjJsi8A2tSzMojqcSGyga0=
 go.temporal.io/api v1.64.3/go.mod h1:acM0I9WPuYg8W3Pd9jOZvEgi7mRUttUQ4+e7fowKVnM=
-go.temporal.io/sdk v1.50.0 h1:voD61vs0hfxXOI+evJ/rMdExDYf+I+YLhoawhwf1LVU=
-go.temporal.io/sdk v1.50.0/go.mod h1:xP0FulN5JJSfisESUP60LlWsrKz2tLSStGjVdk8r5cc=
+go.temporal.io/sdk v1.51.0 h1:RsEghFfg91qWgNaecRgPrms9TA7iXskSzSQO2BwhJRs=
+go.temporal.io/sdk v1.51.0/go.mod h1:Gj2KwnQAlMhPRSX1RoqV3Zez8Y0U+6dCGxn1sg+j9kg=
 go.uber.org/multierr v1.11.0 h1:blXXJkSxSSfBVBlC76pxqeO+LN3aDfLQo+309xJstO0=
 go.uber.org/multierr v1.11.0/go.mod h1:20+QtiLqy0Nd6FdQB9TLXag12DsQkrbs3htMFfDN80Y=
 go.yaml.in/yaml/v3 v3.0.6 h1:zcDfvjXEqTQmpjniUBLc91xYJMB2c4QOFxEF/LCEckM=
