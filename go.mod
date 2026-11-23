@@ -7,7 +7,7 @@ require (
 	github.com/coreos/go-oidc/v3 v3.21.0
 	github.com/go-jose/go-jose/v4 v4.1.9
 	github.com/jackc/pgx/v5 v5.12.0
-	github.com/labstack/echo/v5 v5.4.4
+	github.com/labstack/echo/v5 v5.4.6
 	github.com/pressly/goose/v3 v3.30.1
 	github.com/swaggo/files/v2 v2.0.2
 	github.com/swaggo/swag v1.16.6
